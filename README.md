@@ -18,6 +18,27 @@ The intent of the project is to explore questions like:
 
 This is meant to be part simulation, part sandbox, and part experiment.
 
+## Sample Simulation Summary
+
+####  Community Projects
+- The villagers spent most of their time contributing materials to three key projects:
+
+- Wood Shed: the most-contributed project; provides village-wide warmth and better rest recovery
+- Granary: food security backup; Mira and Asha pushed wheat and wood into it early
+- Bathhouse: the late-game priority flagged on the notice board; needed wood + wheat to make the village center more "livable" and improve recovery
+
+#### Resource Gathering
+
+- Bolt was the main woodcutter, chopping from nearby forest tiles throughout
+- Asha farmed wheat from communal plots repeatedly
+- Mira and Fen cooked fish into meals at the community hearth for better food value
+
+####  Social/Market Activity
+
+- Market hours triggered movement toward the plaza, with Fen and Luma most active in seeking trades and social leverage
+- Fen gave Mira a flower gift as a relationship/influence move
+- Several villagers tried to position themselves as "the person people remember" for keeping the village warm
+
 ## Current Feature Set
 
 - Shared tile world with:
