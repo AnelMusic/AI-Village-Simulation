@@ -1,0 +1,6 @@
+openai>=2.15.0
+pygame>=2.6.1
+python-dotenv>=1.0
+pydantic>=2.12.0
+PyYAML>=6.0
+pytest>=9.0
