@@ -4,6 +4,9 @@ Village Sim is a 2D tile-based social sandbox where a small group of AI villager
 
 Each villager acts independently through structured tool calls. They can move, rest, sleep, cook, fish, forage, gather flowers, trade, give gifts, contribute to public projects, propose alliances, and broadcast to nearby groups. The goal is not a scripted story, but emergent village behavior you can watch, tune, and study.
 
+<img width="1176" height="754" alt="image" src="https://github.com/user-attachments/assets/44560c65-ac6b-4ebf-8004-3aa6c571765b" />
+
+
 ## Project Goal
 
 The intent of the project is to explore questions like:
