@@ -259,6 +259,9 @@ class SimulationEngine:
                 return
             time.sleep(0.01)
 
+    SEASON_ORDER = ("spring", "summer", "autumn", "winter")
+    SEASON_LENGTH_DAYS = 4
+
     def _advance_time(self) -> None:
         day_progress = self.config.tick_interval_seconds / self.config.day_length_seconds
         self.world.time_of_day += day_progress
@@ -266,6 +269,21 @@ class SimulationEngine:
             self.world.time_of_day -= 1.0
             self.world.day += 1
             self._decay_relationships()
+            if self.world.day > 1 and (self.world.day - 1) % self.SEASON_LENGTH_DAYS == 0:
+                self._advance_season()
+
+    def _advance_season(self) -> None:
+        index = self.SEASON_ORDER.index(self.world.season) if self.world.season in self.SEASON_ORDER else 0
+        self.world.season = self.SEASON_ORDER[(index + 1) % len(self.SEASON_ORDER)]
+        event = self.action_resolver._record_event(
+            kind="season_change",
+            actor="system",
+            summary=f"The season turns to {self.world.season}.",
+            location=self.world.landmarks.get("village_plaza"),
+            public=True,
+            metadata={"season": self.world.season},
+        )
+        self._append_event_row(event, "system")
 
     def _decay_relationships(self) -> None:
         """Trust drifts slowly back toward neutral without recent interaction."""
@@ -353,8 +371,12 @@ class SimulationEngine:
 
         if self._is_night():
             warmth_change = -0.010 * warmth_focus
+            if self.world.season == "winter":
+                warmth_change -= 0.005
         else:
             warmth_change = 0.006
+            if self.world.season == "winter":
+                warmth_change -= 0.004
         event_kind = self._event_kind()
         if event_kind == "storm" and agent.position != agent.house_position and not agent.is_sleeping:
             warmth_change -= 0.010
@@ -436,25 +458,37 @@ class SimulationEngine:
                 agent.pending_result = "Movement failed because the path was blocked."
                 agent.next_think_tick = self.world.tick_count + 1
 
+    SEASON_REGEN_FACTOR = {"spring": 1.0, "summer": 0.9, "autumn": 1.2, "winter": 2.0}
+    SEASON_FARM_GROWTH = {"spring": 0.08, "summer": 0.11, "autumn": 0.07, "winter": 0.04}
+
     def _grow_crops_and_regenerate_forest(self) -> None:
         greenhouse_complete = self.world.public_projects.get("greenhouse") is not None and self.world.public_projects["greenhouse"].completed
         regen_paused = self._event_kind() in {"shortage", "storm"}
+        season = self.world.season if self.world.season in self.SEASON_REGEN_FACTOR else "spring"
+        regen_factor = self.SEASON_REGEN_FACTOR[season]
+        farm_growth = self.SEASON_FARM_GROWTH[season]
+        if greenhouse_complete:
+            farm_growth += 0.03
+        forest_interval = max(4, int(round(16 * regen_factor)))
+        berry_interval = max(5, int(round(20 * regen_factor)))
+        fish_interval = max(5, int(round(18 * regen_factor)))
+        flower_interval = max(6, int(round((14 if greenhouse_complete else 22) * regen_factor)))
         for row in self.world.grid:
             for tile in row:
                 if tile.kind == "farm" and tile.crop_stage == "growing":
-                    tile.crop_progress += 0.11 if greenhouse_complete else 0.08
+                    tile.crop_progress += farm_growth
                     if tile.crop_progress >= 1.0:
                         tile.crop_stage = "ripe"
                         tile.crop_progress = 1.0
                 if regen_paused:
                     continue
-                if tile.kind == "forest" and tile.wood < 8 and self.world.tick_count % 16 == 0:
+                if tile.kind == "forest" and tile.wood < 8 and self.world.tick_count % forest_interval == 0:
                     tile.wood += 1
-                if tile.kind == "berry_grove" and tile.berries < 5 and self.world.tick_count % 20 == 0:
+                if tile.kind == "berry_grove" and tile.berries < 5 and self.world.tick_count % berry_interval == 0:
                     tile.berries += 1
-                if tile.kind == "water" and tile.fish < 4 and self.world.tick_count % 18 == 0:
+                if tile.kind == "water" and tile.fish < 4 and self.world.tick_count % fish_interval == 0:
                     tile.fish += 1
-                if tile.kind == "flower_garden" and tile.flowers < 5 and self.world.tick_count % (14 if greenhouse_complete else 22) == 0:
+                if tile.kind == "flower_garden" and tile.flowers < 5 and self.world.tick_count % flower_interval == 0:
                     tile.flowers += 1
 
     def _expire_trades(self) -> None:

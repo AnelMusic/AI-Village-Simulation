@@ -412,6 +412,21 @@ def build_observation(
     adjacent_text = ", ".join(adjacent_agents) if adjacent_agents else "nobody"
     project_prompt_text = "\n".join(project_prompts) or "- No immediate project opportunities at your position."
     immediate_actions_text = "\n".join(immediate_actions[:8]) or "- No especially strong local action is available, so moving is reasonable."
+    stock_totals: dict[str, int] = {}
+    for villager in world.agents.values():
+        for item, amount in villager.inventory.items():
+            stock_totals[item] = stock_totals.get(item, 0) + amount
+    stock_lines = []
+    for item in ("wood", "wheat", "berries", "fish", "flowers", "meal"):
+        total = stock_totals.get(item, 0)
+        if total <= 3:
+            marker = " - SCARCE, trades high"
+        elif total >= 18:
+            marker = " - plentiful, trades low"
+        else:
+            marker = ""
+        stock_lines.append(f"- {item}: {total} held by villagers{marker}")
+    stock_text = "\n".join(stock_lines)
     market_text = (
         f"Market hour is active until tick {world.market_active_until_tick}. The plaza is especially social and trade-friendly."
         if world.is_market_active()
@@ -424,7 +439,7 @@ def build_observation(
     )
 
     return (
-        f"=== Observation: Day {world.day}, tick {world.tick_count} ===\n"
+        f"=== Observation: Day {world.day}, tick {world.tick_count} (season: {world.season}) ===\n"
         f"You are at {agent.position}. House: {agent.house_position}. Energy: {agent.energy:.2f}.\n"
         f"Hunger {int(agent.hunger * 100)}%, warmth {int(agent.warmth * 100)}%, loneliness {int(agent.social_need * 100)}%.\n"
         f"Inventory: {json.dumps(agent.inventory, sort_keys=True)}.\n"
@@ -436,6 +451,7 @@ def build_observation(
         f"Known landmarks across the whole map:\n{landmark_text}\n\n"
         f"Public projects:\n{project_text}\n\n"
         f"Project opportunities from where you are:\n{project_prompt_text}\n\n"
+        f"Village stockpiles (price hints for trading):\n{stock_text}\n\n"
         f"Immediate valid actions from where you stand:\n{immediate_actions_text}\n\n"
         f"Nearby villagers:\n{visible_agents_text}\n\n"
         f"Nearby tiles:\n{nearby_tiles_text}\n\n"

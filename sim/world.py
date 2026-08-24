@@ -378,6 +378,7 @@ class WorldState:
     pending_asks: dict[str, HelpAsk] = field(default_factory=dict)
     recent_events: list[WorldEvent] = field(default_factory=list)
     active_event: dict[str, Any] | None = None
+    season: str = "spring"
 
     def tile_at(self, position: tuple[int, int]) -> Tile:
         x, y = position
@@ -425,6 +426,7 @@ class WorldState:
             "pending_asks": {ask_id: ask.to_dict() for ask_id, ask in self.pending_asks.items()},
             "recent_events": [event.to_dict() for event in self.recent_events[-200:]],
             "active_event": dict(self.active_event) if self.active_event else None,
+            "season": self.season,
         }
 
     @classmethod
@@ -468,6 +470,7 @@ class WorldState:
             pending_asks=pending_asks,
             recent_events=recent_events,
             active_event=dict(data["active_event"]) if data.get("active_event") else None,
+            season=str(data.get("season", "spring")),
         )
 
     def save(self, path: str | Path) -> None:

@@ -287,7 +287,7 @@ class PygameRenderer:
         hour = int(world.time_of_day * 24)
         minute = int((world.time_of_day * 24 - hour) * 60)
         title = self.title_font.render(
-            f"Village Sim   Day {world.day}  {hour:02d}:{minute:02d}  tick {world.tick_count}",
+            f"Village Sim   Day {world.day}  {hour:02d}:{minute:02d}  {world.season}  tick {world.tick_count}",
             True,
             TEXT_COLOR,
         )
