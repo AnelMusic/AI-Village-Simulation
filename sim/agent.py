@@ -63,6 +63,8 @@ def build_system_prompt(agent: AgentState, personality: str) -> str:
         "If the observation gives immediate valid actions from your current position, prefer those over invented targets.\n"
         "Trade and conversation require being adjacent to other villagers, so travel to shared places when you want interaction.\n"
         "You can also visit someone at their house, give gifts, broadcast to everyone nearby, and propose alliances when trust feels strong enough.\n"
+        "Speaking to someone directly opens a conversation they are expected to answer with reply. Conversations are where trust is actually built.\n"
+        "If you need something, ask_help lets you call in a favor someone owes you; counter_offer lets you renegotiate a trade instead of just accepting or rejecting it.\n"
         "You can move to named landmarks like village_plaza, well, community_hearth, notice_board, communal_farm, berry_grove, village_pond, flower_garden, west_forest, east_forest, north_forest, my_house, another villager's name, another villager's house name like Mira_house, or any walkable x,y coordinate.\n"
         "The village has shared pressures: food, warmth, and morale. Public projects can improve those pressures for everyone.\n"
         "The granary helps preserve food and improves communal harvests. The wood_shed helps warmth and makes resting stronger.\n"
@@ -208,6 +210,26 @@ def build_observation(
         f"- Proposal {proposal.proposal_id}: {proposal.from_agent} wants an alliance. Message: {proposal.message}"
         for proposal in pending_alliances
     ]
+    my_conversations = [
+        conversation
+        for conversation in world.conversations.values()
+        if conversation.active and conversation.awaiting == agent.name
+    ]
+    conversation_lines = [
+        f"- Conversation {conversation.conversation_id} with {conversation.last_speaker} (reply expected): "
+        f'they said "{conversation.last_message}". Use reply to answer them.'
+        for conversation in my_conversations
+    ]
+    my_asks = [
+        ask
+        for ask in world.pending_asks.values()
+        if ask.to_agent == agent.name and ask.status == "pending"
+    ]
+    ask_lines = [
+        f"- Help request {ask.ask_id} from {ask.from_agent}: wants {ask.quantity} {ask.item}. "
+        f"Message: {ask.message}. Use accept_help or reject_help."
+        for ask in my_asks
+    ]
 
     memory_lines = memory_store.get(agent.name).recall_lines(limit=5)
     relationship_lines = relationships.summary_for(agent.name)
@@ -233,6 +255,8 @@ def build_observation(
     events_text = "\n".join(relevant_events) or "- Nothing recent"
     trade_text = "\n".join(trade_lines) or "- No pending trade offers"
     alliance_text = "\n".join(alliance_lines) or "- No pending alliance proposals"
+    conversation_text = "\n".join(conversation_lines) or "- No conversations waiting for you"
+    ask_text = "\n".join(ask_lines) or "- No pending help requests"
     memory_text = "\n".join(memory_lines) or "- No memories yet"
     relationship_text = "\n".join(relationship_lines) or "- No relationships yet"
     landmark_text = "\n".join(landmark_lines) or "- No landmarks"
@@ -299,6 +323,10 @@ def build_observation(
         needs.append("You have pending trade offers waiting for a response.")
     if pending_alliances:
         needs.append("You have pending alliance proposals waiting for a response.")
+    if my_conversations:
+        needs.append("Someone spoke to you directly and expects a reply. Ignoring them cools the relationship.")
+    if my_asks:
+        needs.append("Someone is asking you for help right now. Answer with accept_help or reject_help.")
     if night:
         needs.append("It is nighttime, so sleeping at home and resting anywhere are both possible.")
     if agent.energy < 0.45 and world.landmarks.get("well") is not None:
@@ -371,6 +399,8 @@ def build_observation(
         f"Nearby tiles:\n{nearby_tiles_text}\n\n"
         f"Pending trades:\n{trade_text}\n\n"
         f"Pending alliances:\n{alliance_text}\n\n"
+        f"Conversations waiting for you:\n{conversation_text}\n\n"
+        f"Help requests waiting for you:\n{ask_text}\n\n"
         f"Relationship summary:\n{relationship_text}\n\n"
         f"Recent events:\n{events_text}\n\n"
         f"Memories:\n{memory_text}\n\n"
@@ -632,6 +662,30 @@ class HeuristicDecisionPolicy:
             "loneliness": int(match.group(3)),
         }
 
+    @staticmethod
+    def _extract_conversation_id(text: str) -> str | None:
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("- Conversation ") and "(reply expected)" in line:
+                return line.split(" ", 3)[2]
+        return None
+
+    @staticmethod
+    def _extract_help_asks(text: str) -> list[tuple[str, str, str, int]]:
+        asks: list[tuple[str, str, str, int]] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("- Help request "):
+                continue
+            match = re.match(r"- Help request (\S+) from (\S+): wants (\d+) (\S+)\.", line)
+            if match:
+                asks.append((match.group(1), match.group(2), match.group(4), int(match.group(3))))
+        return asks
+
+    @staticmethod
+    def _owes_favor(text: str, asker: str) -> bool:
+        return re.search(rf"{re.escape(asker)} owes you a favor", text) is not None
+
     def decide(self, request: DecisionRequest) -> Decision:
         observation = request.observation
         observation_lower = observation.lower()
@@ -657,6 +711,28 @@ class HeuristicDecisionPolicy:
                     {"trade_id": trade_id, "reason": "Not worthwhile right now.", "thought": "I should decline."},
                     "I should decline.",
                 )
+        conversation_id = self._extract_conversation_id(request.observation)
+        if conversation_id:
+            return Decision(
+                "reply",
+                {"conversation_id": conversation_id, "message": "Good to hear from you. I am listening.", "thought": "They spoke to me directly, so I should answer."},
+                "They spoke to me directly, so I should answer.",
+            )
+        help_asks = self._extract_help_asks(request.observation)
+        if help_asks:
+            ask_id, asker, item, quantity = help_asks[0]
+            spare = inventory.get(item, 0) - quantity
+            if spare >= 0 and (self._owes_favor(request.observation, asker) or spare >= 2):
+                return Decision(
+                    "accept_help",
+                    {"ask_id": ask_id, "thought": f"I can spare {quantity} {item} for {asker}."},
+                    f"I can spare {quantity} {item} for {asker}.",
+                )
+            return Decision(
+                "reject_help",
+                {"ask_id": ask_id, "reason": f"I cannot spare {quantity} {item} right now.", "thought": "I have to look after my own supplies."},
+                "I have to look after my own supplies.",
+            )
         if "energy is low" in observation_lower and position == self._extract_house(request.observation):
             return Decision("sleep", {"thought": "I need to sleep."}, "I need to sleep.")
         if "energy is low" in observation_lower and "nighttime" not in observation_lower:

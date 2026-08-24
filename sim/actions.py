@@ -5,7 +5,7 @@ import uuid
 
 from .memory import MemoryStore
 from .relationships import RelationshipGraph
-from .world import AgentState, AllianceOffer, ProjectState, TradeOffer, WorldEvent, WorldState
+from .world import AgentState, AllianceOffer, Conversation, HelpAsk, ProjectState, TradeOffer, WorldEvent, WorldState
 
 
 @dataclass
@@ -195,7 +195,244 @@ class ActionResolver:
             listener.interrupt_flag = True
             self.relationships.record(agent.name, listener.name, self.world.day, 0.05, f'Spoke: "{message}"')
             self._remember(listener.name, f'{agent.name} said "{message}" nearby.', 2, ["heard"])
+        if target in self.world.agents and heard_by:
+            self._open_or_continue_conversation(agent, self.world.agents[target], message)
         return ActionResult(True, f'You said "{message}".', event)
+
+    def _open_or_continue_conversation(self, speaker: AgentState, listener: AgentState, message: str) -> Conversation:
+        for conversation in self.world.conversations.values():
+            if (
+                conversation.active
+                and conversation.awaiting == speaker.name
+                and listener.name in conversation.participants
+                and speaker.name in conversation.participants
+            ):
+                conversation.last_speaker = speaker.name
+                conversation.last_message = message
+                conversation.last_tick = self.world.tick_count
+                conversation.expires_tick = self.world.tick_count + 6
+                conversation.awaiting = listener.name
+                conversation.active = True
+                return conversation
+        conversation = Conversation(
+            conversation_id=str(uuid.uuid4())[:8],
+            participants=[speaker.name, listener.name],
+            last_speaker=speaker.name,
+            last_message=message,
+            created_tick=self.world.tick_count,
+            last_tick=self.world.tick_count,
+            expires_tick=self.world.tick_count + 6,
+            awaiting=listener.name,
+        )
+        self.world.conversations[conversation.conversation_id] = conversation
+        return conversation
+
+    def _handle_reply(self, agent: AgentState, args: dict) -> ActionResult:
+        conversation = self.world.conversations.get(args["conversation_id"])
+        if conversation is None or not conversation.active:
+            return ActionResult(False, "That conversation is no longer active.")
+        if conversation.awaiting != agent.name:
+            return ActionResult(False, "That conversation is not waiting for you.")
+        other = self.world.agents.get(conversation.last_speaker)
+        if other is None:
+            return ActionResult(False, "The other participant is gone.")
+        if not self.world.is_adjacent(agent.position, other.position):
+            return ActionResult(False, f"{other.name} is not adjacent anymore.")
+        message = args["message"].strip()[:90]
+        conversation.last_speaker = agent.name
+        conversation.last_message = message
+        conversation.last_tick = self.world.tick_count
+        conversation.expires_tick = self.world.tick_count + 6
+        conversation.awaiting = other.name
+        agent.current_action = "speaking"
+        agent.speech_bubble = message
+        agent.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        other.last_social_tick = self.world.tick_count
+        other.social_need = max(0.0, other.social_need - 0.5)
+        other.interrupt_flag = True
+        self.relationships.record(agent.name, other.name, self.world.day, 0.06, f'Replied: "{message}"')
+        event = self._record_event(
+            kind="reply",
+            actor=agent.name,
+            target=other.name,
+            summary=f'{agent.name} replies to {other.name}: "{message}"',
+            location=agent.position,
+            public=True,
+            metadata={"conversation_id": conversation.conversation_id},
+        )
+        self._remember(agent.name, f'I replied to {other.name}: "{message}"', 3, ["speak"])
+        self._remember(other.name, f'{agent.name} replied to me: "{message}"', 3, ["heard"])
+        return ActionResult(True, f'You replied to {other.name}.', event)
+
+    def _handle_ask_help(self, agent: AgentState, args: dict) -> ActionResult:
+        target_name = args["target_agent"]
+        target = self.world.agents.get(target_name)
+        if target is None:
+            return ActionResult(False, f"Unknown target agent: {target_name}")
+        if not self.world.is_adjacent(agent.position, target.position):
+            return ActionResult(False, f"{target_name} is not adjacent.")
+        item = args["item"]
+        quantity = max(1, int(args["quantity"]))
+        if item not in {"wood", "wheat", "berries", "fish", "flowers", "meal"}:
+            return ActionResult(False, f"Cannot ask for unknown item: {item}")
+        owed_favor = self.relationships.get(target_name, agent.name).favor
+        ask = HelpAsk(
+            ask_id=str(uuid.uuid4())[:8],
+            from_agent=agent.name,
+            to_agent=target_name,
+            item=item,
+            quantity=quantity,
+            message=args["message"][:90],
+            created_tick=self.world.tick_count,
+            expires_tick=self.world.tick_count + 8,
+        )
+        self.world.pending_asks[ask.ask_id] = ask
+        agent.current_action = "asking_help"
+        agent.last_social_tick = self.world.tick_count
+        target.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        target.interrupt_flag = True
+        summary = f"{agent.name} asked {target_name} for help: {quantity} {item}."
+        if owed_favor >= 0.3:
+            summary += f" {agent.name} is calling in a favor ({owed_favor:.1f})."
+        event = self._record_event(
+            kind="ask_help",
+            actor=agent.name,
+            target=target_name,
+            summary=summary,
+            location=agent.position,
+            public=True,
+            metadata={"ask_id": ask.ask_id, "item": item, "quantity": quantity, "calling_favor": owed_favor >= 0.3},
+        )
+        self._remember(agent.name, f"I asked {target_name} for {quantity} {item}.", 3, ["help", "social"])
+        self._remember(target_name, f"{agent.name} asked me for {quantity} {item}: {args['message'][:60]}", 3, ["help", "social"])
+        return ActionResult(True, f"Help request {ask.ask_id} sent to {target_name}.", event)
+
+    def _handle_accept_help(self, agent: AgentState, args: dict) -> ActionResult:
+        ask = self.world.pending_asks.get(args["ask_id"])
+        if ask is None or ask.status != "pending":
+            return ActionResult(False, "That help request is no longer available.")
+        if ask.to_agent != agent.name:
+            return ActionResult(False, "That help request is not for you.")
+        requester = self.world.agents.get(ask.from_agent)
+        if requester is None:
+            return ActionResult(False, "The requester is gone.")
+        if not self.world.is_adjacent(agent.position, requester.position):
+            return ActionResult(False, f"{ask.from_agent} is not adjacent anymore.")
+        if agent.inventory.get(ask.item, 0) < ask.quantity:
+            ask.status = "failed"
+            return ActionResult(False, f"You do not have {ask.quantity} {ask.item} to give.")
+        agent.inventory[ask.item] -= ask.quantity
+        requester.inventory[ask.item] = requester.inventory.get(ask.item, 0) + ask.quantity
+        ask.status = "accepted"
+
+        owed = self.relationships.get(agent.name, requester.name).favor  # agent owes requester
+        if owed >= 0.3:
+            self.relationships.spend_favor(agent.name, requester.name, 0.5)
+            self.relationships.record(agent.name, requester.name, self.world.day, 0.08, f"Honored a help request by giving {ask.quantity} {ask.item}")
+            outcome = f"Favor spent ({owed:.1f} owed before)."
+        else:
+            self.relationships.record_gift(
+                agent.name,
+                requester.name,
+                self.world.day,
+                f"Helped with {ask.quantity} {ask.item}",
+                favor_delta=0.4,
+            )
+            outcome = "A new obligation was created."
+        agent.current_action = "helping"
+        requester.last_social_tick = self.world.tick_count
+        agent.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        requester.comfort_ticks = min(requester.comfort_ticks + 3, 16)
+        event = self._record_event(
+            kind="help_accept",
+            actor=agent.name,
+            target=requester.name,
+            summary=f"{agent.name} helped {requester.name} with {ask.quantity} {ask.item}. {outcome}",
+            location=agent.position,
+            public=True,
+            metadata={"ask_id": ask.ask_id, "item": ask.item, "quantity": ask.quantity},
+        )
+        self._remember(agent.name, f"I helped {requester.name} with {ask.quantity} {ask.item}. {outcome}", 4, ["help", "social"])
+        self._remember(requester.name, f"{agent.name} helped me with {ask.quantity} {ask.item}.", 4, ["help", "social"])
+        return ActionResult(True, f"You gave {ask.quantity} {ask.item} to {requester.name}. {outcome}", event)
+
+    def _handle_reject_help(self, agent: AgentState, args: dict) -> ActionResult:
+        ask = self.world.pending_asks.get(args["ask_id"])
+        if ask is None or ask.status != "pending":
+            return ActionResult(False, "That help request is no longer available.")
+        if ask.to_agent != agent.name:
+            return ActionResult(False, "That help request is not for you.")
+        ask.status = "rejected"
+        requester = self.world.agents.get(ask.from_agent)
+        if requester is not None:
+            had_item = agent.inventory.get(ask.item, 0) >= ask.quantity
+            if had_item:
+                self.relationships.record(agent.name, ask.from_agent, self.world.day, -0.06, f"Refused help: {args['reason'][:60]}")
+            else:
+                self.relationships.record(agent.name, ask.from_agent, self.world.day, 0.0, f"Could not help (no {ask.item})")
+            requester.last_social_tick = self.world.tick_count
+        agent.last_social_tick = self.world.tick_count
+        event = self._record_event(
+            kind="help_reject",
+            actor=agent.name,
+            target=ask.from_agent,
+            summary=f"{agent.name} declined {ask.from_agent}'s request for {ask.quantity} {ask.item}.",
+            location=agent.position,
+            public=True,
+            metadata={"ask_id": ask.ask_id, "reason": args.get("reason", "")},
+        )
+        self._remember(agent.name, f"I declined {ask.from_agent}'s request for {ask.quantity} {ask.item}.", 2, ["help"])
+        self._remember(ask.from_agent, f"{agent.name} declined my request for {ask.quantity} {ask.item}.", 3, ["help"])
+        return ActionResult(True, "Help request declined.", event)
+
+    def _handle_counter_offer(self, agent: AgentState, args: dict) -> ActionResult:
+        trade = self.world.pending_trades.get(args["trade_id"])
+        if trade is None or trade.status != "pending":
+            return ActionResult(False, "That trade offer is no longer available.")
+        if trade.to_agent != agent.name:
+            return ActionResult(False, "That trade is not for you.")
+        other = self.world.agents.get(trade.from_agent)
+        if other is None:
+            return ActionResult(False, "The other trader is gone.")
+        if not self.world.is_adjacent(agent.position, other.position):
+            return ActionResult(False, f"{trade.from_agent} is not adjacent anymore.")
+        offer = {item: quantity for item, quantity in args["offer"].items() if quantity > 0}
+        request = {item: quantity for item, quantity in args["request"].items() if quantity > 0}
+        if not offer or not request:
+            return ActionResult(False, "Counter-offers must offer and request at least one item.")
+        if not self._inventory_has(agent.inventory, offer):
+            return ActionResult(False, "You do not have enough items for that counter-offer.")
+        trade.status = "countered"
+        counter = TradeOffer(
+            trade_id=str(uuid.uuid4())[:8],
+            from_agent=agent.name,
+            to_agent=trade.from_agent,
+            offer=offer,
+            request=request,
+            message=args["message"][:90],
+            created_tick=self.world.tick_count,
+            expires_tick=self.world.tick_count + 6,
+        )
+        self.world.pending_trades[counter.trade_id] = counter
+        agent.current_action = "trading"
+        agent.last_social_tick = self.world.tick_count
+        other.last_social_tick = self.world.tick_count
+        other.interrupt_flag = True
+        event = self._record_event(
+            kind="counter_offer",
+            actor=agent.name,
+            target=trade.from_agent,
+            summary=f"{agent.name} countered {trade.from_agent}'s trade with new terms.",
+            location=agent.position,
+            public=True,
+            metadata={"original_trade_id": trade.trade_id, "counter_trade_id": counter.trade_id},
+        )
+        self._remember(agent.name, f"I countered {trade.from_agent}'s trade: give {offer} for {request}.", 3, ["trade"])
+        self._remember(trade.from_agent, f"{agent.name} countered my trade: they offer {offer} for {request}.", 3, ["trade"])
+        return ActionResult(True, f"Counter-offer {counter.trade_id} sent.", event)
 
     def _handle_give_gift(self, agent: AgentState, args: dict) -> ActionResult:
         target_name = args["target_agent"]

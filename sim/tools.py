@@ -331,6 +331,113 @@ TOOLS: list[dict] = [
     },
     {
         "type": "function",
+        "name": "reply",
+        "description": "Reply inside an active conversation that is waiting for you. Conversations expire if left unanswered, and ignoring someone who spoke to you cools the relationship.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string"},
+                "message": {"type": "string"},
+                "thought": {"type": "string"},
+            },
+            "required": ["conversation_id", "message", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "ask_help",
+        "description": "Ask an adjacent villager for an item. If they owe you a favor, this calls it in; otherwise helping creates a new obligation in your favor.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_agent": {"type": "string"},
+                "item": {"type": "string", "enum": ["wood", "wheat", "berries", "fish", "flowers", "meal"]},
+                "quantity": {"type": "integer"},
+                "message": {"type": "string"},
+                "thought": {"type": "string"},
+            },
+            "required": ["target_agent", "item", "quantity", "message", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "accept_help",
+        "description": "Accept a pending help request sent to you. Giving away the item spends any favor you owe the requester; otherwise it creates a new obligation in your favor.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ask_id": {"type": "string"},
+                "thought": {"type": "string"},
+            },
+            "required": ["ask_id", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "reject_help",
+        "description": "Decline a pending help request sent to you.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ask_id": {"type": "string"},
+                "reason": {"type": "string"},
+                "thought": {"type": "string"},
+            },
+            "required": ["ask_id", "reason", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "counter_offer",
+        "description": "Counter a pending trade offer sent to you with new terms. The original offer is replaced by your counter, which the other villager can accept or reject.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "trade_id": {"type": "string"},
+                "offer": {
+                    "type": "object",
+                    "properties": {
+                        "wood": {"type": "integer"},
+                        "wheat": {"type": "integer"},
+                        "berries": {"type": "integer"},
+                        "fish": {"type": "integer"},
+                        "flowers": {"type": "integer"},
+                        "meal": {"type": "integer"},
+                    },
+                    "required": ["wood", "wheat", "berries", "fish", "flowers", "meal"],
+                    "additionalProperties": False,
+                },
+                "request": {
+                    "type": "object",
+                    "properties": {
+                        "wood": {"type": "integer"},
+                        "wheat": {"type": "integer"},
+                        "berries": {"type": "integer"},
+                        "fish": {"type": "integer"},
+                        "flowers": {"type": "integer"},
+                        "meal": {"type": "integer"},
+                    },
+                    "required": ["wood", "wheat", "berries", "fish", "flowers", "meal"],
+                    "additionalProperties": False,
+                },
+                "message": {"type": "string"},
+                "thought": {"type": "string"},
+            },
+            "required": ["trade_id", "offer", "request", "message", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "wait",
         "description": "Do nothing for this tick.",
         "parameters": {
@@ -364,7 +471,7 @@ TOOLS: list[dict] = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "tool": {"type": "string", "description": "One of: move, speak, give_gift, propose_alliance, farm, light_fire, chop_wood, forage, fish, gather_flowers, cook_meal, sleep, rest, offer_trade, contribute_project, wait"},
+                            "tool": {"type": "string", "description": "One of: move, speak, give_gift, propose_alliance, farm, light_fire, chop_wood, forage, fish, gather_flowers, cook_meal, sleep, rest, offer_trade, contribute_project, reply, ask_help, accept_help, reject_help, counter_offer, wait"},
                             "arguments": {"type": "object", "description": "The tool arguments, same shape as calling the tool directly."},
                         },
                         "required": ["tool", "arguments"],

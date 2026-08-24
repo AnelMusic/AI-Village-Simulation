@@ -49,6 +49,11 @@ PLAN_TOOL_NAMES = {
     "rest",
     "offer_trade",
     "contribute_project",
+    "reply",
+    "ask_help",
+    "accept_help",
+    "reject_help",
+    "counter_offer",
     "wait",
 }
 
@@ -153,6 +158,8 @@ class SimulationEngine:
         self._grow_crops_and_regenerate_forest()
         self._expire_trades()
         self._expire_alliances()
+        self._expire_conversations()
+        self._expire_asks()
         self._emit_shared_gathering_events()
         self._schedule_decisions()
 
@@ -343,6 +350,16 @@ class SimulationEngine:
         for proposal_id, proposal in list(self.world.pending_alliances.items()):
             if proposal.status == "pending" and proposal.expires_tick <= self.world.tick_count:
                 proposal.status = "expired"
+
+    def _expire_conversations(self) -> None:
+        for conversation_id, conversation in list(self.world.conversations.items()):
+            if conversation.active and conversation.expires_tick <= self.world.tick_count:
+                conversation.active = False
+
+    def _expire_asks(self) -> None:
+        for ask_id, ask in list(self.world.pending_asks.items()):
+            if ask.status == "pending" and ask.expires_tick <= self.world.tick_count:
+                ask.status = "expired"
 
     def _emit_shared_gathering_events(self) -> None:
         market_tick = max(6, int(round(20 * self.config.ticks_per_second)))
@@ -752,7 +769,7 @@ class SimulationEngine:
                 usage=decision.usage,
             )
 
-        if decision.tool_name in {"speak", "offer_trade", "give_gift", "propose_alliance"}:
+        if decision.tool_name in {"speak", "offer_trade", "give_gift", "propose_alliance", "ask_help"}:
             target_name = str(decision.arguments.get("target") or decision.arguments.get("target_agent") or "").strip()
             if decision.tool_name == "speak" and target_name.lower() in {"everyone", "nearby", "all"}:
                 return decision

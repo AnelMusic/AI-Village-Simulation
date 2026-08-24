@@ -202,6 +202,66 @@ class AllianceOffer:
 
 
 @dataclass
+class Conversation:
+    conversation_id: str
+    participants: list[str]
+    last_speaker: str
+    last_message: str
+    created_tick: int
+    last_tick: int
+    expires_tick: int
+    awaiting: str
+    active: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Conversation":
+        return cls(
+            conversation_id=data["conversation_id"],
+            participants=list(data.get("participants", [])),
+            last_speaker=data.get("last_speaker", ""),
+            last_message=data.get("last_message", ""),
+            created_tick=int(data.get("created_tick", 0)),
+            last_tick=int(data.get("last_tick", 0)),
+            expires_tick=int(data.get("expires_tick", 0)),
+            awaiting=data.get("awaiting", ""),
+            active=bool(data.get("active", True)),
+        )
+
+
+@dataclass
+class HelpAsk:
+    ask_id: str
+    from_agent: str
+    to_agent: str
+    item: str
+    quantity: int
+    message: str
+    created_tick: int
+    expires_tick: int
+    status: str = "pending"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HelpAsk":
+        return cls(
+            ask_id=data["ask_id"],
+            from_agent=data["from_agent"],
+            to_agent=data["to_agent"],
+            item=data["item"],
+            quantity=int(data["quantity"]),
+            message=data.get("message", ""),
+            created_tick=int(data.get("created_tick", 0)),
+            expires_tick=int(data.get("expires_tick", 0)),
+            status=data.get("status", "pending"),
+        )
+
+
+@dataclass
 class WorldEvent:
     tick: int
     day: int
@@ -293,6 +353,8 @@ class WorldState:
     time_of_day: float = 0.25
     pending_trades: dict[str, TradeOffer] = field(default_factory=dict)
     pending_alliances: dict[str, AllianceOffer] = field(default_factory=dict)
+    conversations: dict[str, Conversation] = field(default_factory=dict)
+    pending_asks: dict[str, HelpAsk] = field(default_factory=dict)
     recent_events: list[WorldEvent] = field(default_factory=list)
 
     def tile_at(self, position: tuple[int, int]) -> Tile:
@@ -337,6 +399,8 @@ class WorldState:
             "public_projects": {name: project.to_dict() for name, project in self.public_projects.items()},
             "pending_trades": {trade_id: trade.to_dict() for trade_id, trade in self.pending_trades.items()},
             "pending_alliances": {proposal_id: offer.to_dict() for proposal_id, offer in self.pending_alliances.items()},
+            "conversations": {cid: conversation.to_dict() for cid, conversation in self.conversations.items()},
+            "pending_asks": {ask_id: ask.to_dict() for ask_id, ask in self.pending_asks.items()},
             "recent_events": [event.to_dict() for event in self.recent_events[-200:]],
         }
 
@@ -349,6 +413,12 @@ class WorldState:
         }
         pending_alliances = {
             proposal_id: AllianceOffer.from_dict(offer) for proposal_id, offer in data.get("pending_alliances", {}).items()
+        }
+        conversations = {
+            cid: Conversation.from_dict(conversation) for cid, conversation in data.get("conversations", {}).items()
+        }
+        pending_asks = {
+            ask_id: HelpAsk.from_dict(ask) for ask_id, ask in data.get("pending_asks", {}).items()
         }
         recent_events = [WorldEvent.from_dict(event) for event in data.get("recent_events", [])]
         landmarks = {name: tuple(position) for name, position in data.get("landmarks", {}).items()}
@@ -371,6 +441,8 @@ class WorldState:
             time_of_day=float(data.get("time_of_day", 0.25)),
             pending_trades=pending_trades,
             pending_alliances=pending_alliances,
+            conversations=conversations,
+            pending_asks=pending_asks,
             recent_events=recent_events,
         )
 

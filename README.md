@@ -72,10 +72,16 @@ This is meant to be part simulation, part sandbox, and part experiment.
 - Social actions:
   - direct speech
   - local group announcements
-  - trade offers and responses
+  - conversations with expected replies
+  - trade offers, responses, and counter-offers
+  - help requests that call in favors
   - gifting
   - alliance proposals and responses
   - house visits
+- Agent internals:
+  - per-villager hunger, warmth, and loneliness
+  - personality traits that mechanically scale needs
+  - multi-step plans the engine executes across ticks
 - Village progression:
   - granary
   - wood shed
