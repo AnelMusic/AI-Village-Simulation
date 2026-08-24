@@ -69,6 +69,13 @@ This is meant to be part simulation, part sandbox, and part experiment.
   - fish
   - flowers
   - meals
+  - seasons (spring / summer / autumn / winter)
+  - scarcity-based trade price hints
+- World events:
+  - storms that chill and drain the village
+  - festivals that pull everyone to the plaza
+  - shortages that pause regrowth
+  - traveling traders that reward trade
 - Social actions:
   - direct speech
   - local group announcements
@@ -378,28 +385,21 @@ pytest
 
 The project works, but it is still rough in important ways.
 
-- Agents can still fall into repetitive project-contribution loops, especially when one public project looks like the best local payoff.
-- Energy behavior is improved, but not yet truly strategic. Agents still sometimes overcommit before recovery.
-- The model can still produce reasoning that sounds smarter than the resulting action.
-- Invalid target correction helps a lot, but the agents are not yet fully grounded planners.
-- Social behavior is better than before, but alliances, gifts, and favors still need more tuning to create rich long-term politics.
-- Public projects are meaningful, but agents can over-prioritize them once they identify them as high-value.
-- Market hour creates convergence, but trade frequency is still lower than ideal for a village economy sim.
-- Headless runs with live models can hit OpenAI rate limits at high tick rates; retries with backoff and a heuristic circuit breaker now soften this, but sustained outages still degrade to heuristic behavior.
-- Some emergent behavior is interesting, but the village can still feel too optimization-driven instead of fully alive.
+- The plan stack reduces loops, but agents can still over-commit to one project when it looks like the best payoff.
+- Engine reroutes still exist as guardrails; they are logged as `engine_override` events, but a deeper fix is better model grounding.
+- Trade frequency is better with price hints and counter-offers, but a true negotiated economy (granary shares, storage ownership) is still open.
+- Live API runs can still hit rate limits at high tick rates; the circuit breaker degrades gracefully to heuristic behavior during outages.
+- The viewer is functional but minimal; the P3 roadmap calls for pan/zoom, memory timelines, and a relationship-graph overlay.
 
 ## What Needs Improvement Next
 
 The best next steps would be:
 
-- better anti-loop logic for repeated project contributions
-- smarter long-horizon energy planning
-- stronger reasons for agents to visit each other intentionally
-- more meaningful use of favors and alliance obligations
-- better trade economics and scarcity balancing
-- event systems that force re-prioritization
-- stronger differentiation between home life, work life, and social life
-- clearer in-world signs that a project or social system has changed behavior
+- granary storage with communal shares and the hoarding dilemma
+- deeper dialogue memory so conversations reference earlier promises
+- richer festival/trader event interactions (event-specific actions)
+- viewer upgrade: pan/zoom camera, relationship-graph overlay, activity heatmap
+- longer-horizon planning (plans that span a full day or season)
 
 ## Why The Logs Matter
 
