@@ -184,6 +184,8 @@ def test_action_resolver_validates_and_applies_actions(app_config) -> None:
     assert fen.inventory["flowers"] == 2
     assert relationships.get("Fen", "Mira").favor > 0
 
+    # Alliances now require real trust; seed some history first.
+    relationships.record("Mira", "Fen", world.day, 0.25, "fair exchanges during the day")
     alliance_offer = resolver.apply(
         mira,
         "propose_alliance",

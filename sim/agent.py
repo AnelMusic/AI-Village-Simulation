@@ -341,6 +341,11 @@ def build_observation(
         needs.append("You have been isolated for a while. The village_plaza and communal_farm are good places to meet others.")
     if adjacent_agents:
         needs.append("People are adjacent right now, so gifts, trade, alliance proposals, or a group announcement are immediately possible.")
+        for other_name in adjacent_agents:
+            other_rel = relationships.graph.get(agent.name, {}).get(other_name)
+            if other_rel is not None and not other_rel.allied and other_rel.trust >= 0.2:
+                needs.append(f"Your trust with {other_name} feels strong enough to propose an alliance.")
+                break
     if agent.repeated_action_count >= 3:
         needs.append(
             f"You have repeated a very similar action {agent.repeated_action_count} times recently without enough progress. Change tactics and seek a different place, person, or project."

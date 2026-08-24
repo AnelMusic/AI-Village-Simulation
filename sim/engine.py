@@ -183,6 +183,18 @@ class SimulationEngine:
         if self.world.time_of_day >= 1.0:
             self.world.time_of_day -= 1.0
             self.world.day += 1
+            self._decay_relationships()
+
+    def _decay_relationships(self) -> None:
+        """Trust drifts slowly back toward neutral without recent interaction."""
+        for others in self.relationships.graph.values():
+            for relationship in others.values():
+                if self.world.day - relationship.last_interaction_day < 2:
+                    continue
+                if abs(relationship.trust) < 0.02:
+                    continue
+                drift = 0.02 if relationship.trust > 0 else 0.01
+                relationship.trust = relationship.trust - drift if relationship.trust > 0 else relationship.trust + drift
 
     def _update_speech_bubbles(self, dt_seconds: float) -> None:
         for agent in self.world.agents.values():
@@ -355,6 +367,14 @@ class SimulationEngine:
         for conversation_id, conversation in list(self.world.conversations.items()):
             if conversation.active and conversation.expires_tick <= self.world.tick_count:
                 conversation.active = False
+                # Walking away from a direct question is a small broken promise.
+                self.relationships.record(
+                    conversation.awaiting,
+                    conversation.last_speaker,
+                    self.world.day,
+                    -0.04,
+                    "Let our conversation lapse without answering",
+                )
 
     def _expire_asks(self) -> None:
         for ask_id, ask in list(self.world.pending_asks.items()):

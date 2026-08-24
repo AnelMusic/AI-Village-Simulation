@@ -445,6 +445,13 @@ class ActionResolver:
         quantity = max(1, int(args["quantity"]))
         if agent.inventory.get(item, 0) < quantity:
             return ActionResult(False, f"You do not have enough {item}.")
+        target_trust = self.relationships.get(target_name, agent.name).trust
+        if target_trust <= -0.45:
+            return ActionResult(
+                False,
+                f"{target_name} does not trust you enough to accept anything from your hands. "
+                "The relationship needs repair first.",
+            )
         agent.inventory[item] -= quantity
         target.inventory[item] = target.inventory.get(item, 0) + quantity
         visit_bonus = self._house_visit_bonus(agent, target)
@@ -494,6 +501,13 @@ class ActionResolver:
             return ActionResult(False, f"{target_name} is not adjacent.")
         if self.relationships.are_allies(agent.name, target_name):
             return ActionResult(False, f"You are already allied with {target_name}.")
+        trust = self.relationships.get(agent.name, target_name).trust
+        if trust < 0.15:
+            return ActionResult(
+                False,
+                f"Your trust with {target_name} is too thin ({trust:.2f}) for an alliance to feel honest. "
+                "Trade fairly, talk, and give before proposing again.",
+            )
         proposal = AllianceOffer(
             proposal_id=str(uuid.uuid4())[:8],
             from_agent=agent.name,
@@ -912,6 +926,9 @@ class ActionResolver:
             return ActionResult(False, "That trade offer is no longer available.")
         if trade.to_agent != agent.name:
             return ActionResult(False, "That trade is not for you.")
+        if self.relationships.get(agent.name, trade.from_agent).trust <= -0.45:
+            trade.status = "rejected"
+            return ActionResult(False, f"You do not trust {trade.from_agent} enough to trade with them.")
         other = self.world.agents[trade.from_agent]
         if not self.world.is_adjacent(agent.position, other.position):
             return ActionResult(False, f"{trade.from_agent} is not adjacent anymore.")
