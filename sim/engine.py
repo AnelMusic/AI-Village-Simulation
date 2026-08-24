@@ -20,7 +20,7 @@ from .agent import (
     build_observation,
     build_system_prompt,
 )
-from .config import AppConfig
+from .config import AppConfig, CharacterConfig
 from .memory import MemoryStore
 from .relationships import RelationshipGraph
 from .tools import TOOLS
@@ -167,6 +167,7 @@ class SimulationEngine:
     def _update_sleep_and_energy(self) -> None:
         wood_shed_complete = self.world.public_projects.get("wood_shed") is not None and self.world.public_projects["wood_shed"].completed
         for agent in self.world.agents.values():
+            self._update_agent_needs(agent)
             if agent.is_sleeping:
                 sleep_gain = 0.10
                 if agent.house_fire_ticks > 0 and self._is_night():
@@ -193,11 +194,58 @@ class SimulationEngine:
                     drain += 0.005
                 if self.world.village_morale <= 3.0:
                     drain += 0.005
+                if agent.hunger >= 0.85:
+                    drain += 0.01
+                if agent.warmth <= 0.15:
+                    drain += 0.01
                 agent.energy = max(0.0, agent.energy - drain)
             if agent.comfort_ticks > 0:
                 agent.comfort_ticks -= 1
             if agent.house_fire_ticks > 0:
                 agent.house_fire_ticks -= 1
+
+    def _traits_for(self, agent_name: str) -> CharacterConfig | None:
+        for character in self.config.characters:
+            if character.name == agent_name:
+                return character
+        return None
+
+    def _update_agent_needs(self, agent: AgentState) -> None:
+        """Advance per-agent hunger, warmth, and social need.
+
+        Personality traits scale how fast each pressure builds, so a
+        food-focused villager like Mira genuinely feels hunger sooner than a
+        tinkerer like Luma, and those pressures feed both observation urgency
+        and energy drain.
+        """
+        character = self._traits_for(agent.name)
+        food_focus = character.trait("food_focus") if character else 1.0
+        warmth_focus = character.trait("warmth_focus") if character else 1.0
+        social_focus = character.trait("social_focus") if character else 1.0
+
+        hunger_gain = 0.007 * food_focus
+        if self.world.village_food >= 8.0:
+            hunger_gain -= 0.001
+        if agent.is_sleeping:
+            hunger_gain *= 0.5
+        agent.hunger = min(1.0, agent.hunger + hunger_gain)
+
+        if self._is_night():
+            warmth_change = -0.010 * warmth_focus
+        else:
+            warmth_change = 0.006
+        if self.world.village_warmth <= 4.0:
+            warmth_change -= 0.004 * warmth_focus
+        hearth = self.world.landmarks.get("community_hearth")
+        if hearth is not None and abs(agent.position[0] - hearth[0]) + abs(agent.position[1] - hearth[1]) <= 1:
+            warmth_change += 0.02
+        if agent.position == agent.house_position and agent.house_fire_ticks > 0:
+            warmth_change += 0.02
+        if agent.is_sleeping and agent.house_fire_ticks > 0:
+            warmth_change += 0.01
+        agent.warmth = max(0.0, min(1.0, agent.warmth + warmth_change))
+
+        agent.social_need = min(1.0, agent.social_need + 0.012 * social_focus)
 
     def _update_village_pressures(self) -> None:
         food_drain = 0.035

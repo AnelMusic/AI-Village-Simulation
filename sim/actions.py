@@ -177,6 +177,7 @@ class ActionResolver:
         agent.current_action = "speaking"
         agent.speech_bubble = message
         agent.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
         if self._market_trade_bonus_active(agent.position):
             self._boost_village_morale(0.25)
         event = self._record_event(
@@ -190,6 +191,7 @@ class ActionResolver:
         self._remember(agent.name, f'I said "{message}" to {target}.', 2, ["speak"])
         for listener in heard_by:
             listener.last_social_tick = self.world.tick_count
+            listener.social_need = max(0.0, listener.social_need - 0.5)
             self.relationships.record(agent.name, listener.name, self.world.day, 0.05, f'Spoke: "{message}"')
             self._remember(listener.name, f'{agent.name} said "{message}" nearby.', 2, ["heard"])
         return ActionResult(True, f'You said "{message}".', event)
@@ -226,6 +228,8 @@ class ActionResolver:
         agent.current_action = "gifting"
         target.last_social_tick = self.world.tick_count
         agent.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        target.social_need = 0.0
         summary = f"{agent.name} brought {target_name} a gift of {quantity} {item}."
         if visit_bonus:
             summary = f"{agent.name} visited {target_name}'s home and brought a gift of {quantity} {item}."
@@ -263,6 +267,8 @@ class ActionResolver:
         agent.current_action = "allying"
         agent.last_social_tick = self.world.tick_count
         target.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        target.social_need = 0.0
         event = self._record_event(
             kind="alliance_offer",
             actor=agent.name,
@@ -320,6 +326,7 @@ class ActionResolver:
                 harvest_yield += 1
                 agent.comfort_ticks = min(agent.comfort_ticks + 2, 16)
             agent.inventory["wheat"] = agent.inventory.get("wheat", 0) + harvest_yield
+            agent.hunger = max(0.0, agent.hunger - 0.12)
             agent.current_action = "farming"
             event = self._record_event(
                 kind="farm_harvest",
@@ -399,6 +406,7 @@ class ActionResolver:
             berry_yield += 1
         agent.inventory["berries"] = agent.inventory.get("berries", 0) + berry_yield
         agent.energy = min(1.0, agent.energy + 0.08)
+        agent.hunger = max(0.0, agent.hunger - 0.15)
         self._boost_village_food(0.35)
         agent.current_action = "foraging"
         event = self._record_event(
@@ -435,6 +443,7 @@ class ActionResolver:
             catch += 1
         agent.inventory["fish"] = agent.inventory.get("fish", 0) + catch
         agent.energy = min(1.0, agent.energy + 0.05)
+        agent.hunger = max(0.0, agent.hunger - 0.10)
         self._boost_village_food(0.45)
         agent.current_action = "fishing"
         event = self._record_event(
@@ -510,6 +519,7 @@ class ActionResolver:
         agent.inventory["meal"] = agent.inventory.get("meal", 0) + meal_yield
         energy_gain = 0.10 + (0.03 if helpers else 0.0)
         agent.energy = min(1.0, agent.energy + energy_gain)
+        agent.hunger = max(0.0, agent.hunger - 0.5)
         agent.current_action = "cooking"
         self._boost_village_food(0.55 * quantity)
         self._boost_village_morale(0.12 * quantity)
@@ -573,6 +583,7 @@ class ActionResolver:
         if agent.inventory.get("meal", 0) > 0:
             agent.inventory["meal"] -= 1
             base_restore += 0.06
+            agent.hunger = max(0.0, agent.hunger - 0.3)
             self._boost_village_morale(0.05)
         if self.world.village_warmth >= 6 and self.world.village_food >= 6:
             base_restore += 0.03
@@ -637,6 +648,8 @@ class ActionResolver:
         agent.current_action = "trading"
         agent.last_social_tick = self.world.tick_count
         target.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        target.social_need = 0.0
         if self._market_trade_bonus_active(agent.position):
             self._boost_village_morale(0.15)
         event = self._record_event(
@@ -673,6 +686,8 @@ class ActionResolver:
         other.current_action = "trading"
         agent.last_social_tick = self.world.tick_count
         other.last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        other.social_need = 0.0
         bonus = 0.08
         if self._market_trade_bonus_active(agent.position):
             bonus += 0.04
@@ -763,6 +778,8 @@ class ActionResolver:
         trade.status = "rejected"
         agent.last_social_tick = self.world.tick_count
         self.world.agents[trade.from_agent].last_social_tick = self.world.tick_count
+        agent.social_need = 0.0
+        self.world.agents[trade.from_agent].social_need = 0.0
         event = self._record_event(
             kind="trade_reject",
             actor=agent.name,

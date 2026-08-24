@@ -387,6 +387,13 @@ class PygameRenderer:
         lines.append((f"Action: {agent.current_action}", TEXT_COLOR, 20))
         lines.append((f"Position: {agent.position}   House: {agent.house_position}", TEXT_COLOR, 20))
         lines.append((f"Energy: {agent.energy:.2f}{'  (sleeping)' if agent.is_sleeping else ''}", TEXT_COLOR, 20))
+        lines.append(
+            (
+                f"Needs: hunger {int(agent.hunger * 100)}%  warmth {int(agent.warmth * 100)}%  loneliness {int(agent.social_need * 100)}%",
+                TEXT_COLOR,
+                20,
+            )
+        )
         inventory = ", ".join(f"{item} x{amount}" for item, amount in sorted(agent.inventory.items())) or "empty"
         lines.append((f"Inventory: {inventory}", TEXT_COLOR, 20))
         lines.append((f"Thought: {agent.last_thought or 'none yet'}", (180, 200, 240), 20))

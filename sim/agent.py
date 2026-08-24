@@ -240,6 +240,22 @@ def build_observation(
     village_status = (
         f"Village food {world.village_food:.1f}/12, warmth {world.village_warmth:.1f}/12, morale {world.village_morale:.1f}/12."
     )
+    character = next((item for item in config.characters if item.name == agent.name), None)
+    food_focus = character.trait("food_focus") if character else 1.0
+    warmth_focus = character.trait("warmth_focus") if character else 1.0
+    social_focus = character.trait("social_focus") if character else 1.0
+    if agent.hunger >= 0.85:
+        needs.append("You are starving. Find food now: forage berries, fish, harvest ripe crops, or cook at the hearth.")
+    elif agent.hunger >= 0.6 or (food_focus >= 1.3 and agent.hunger >= 0.45):
+        needs.append("You are genuinely hungry. Cooking, foraging, fishing, or harvesting should come soon.")
+    if agent.warmth <= 0.15:
+        needs.append("You are freezing. Get to the hearth or home, light a fire, or rest somewhere warm.")
+    elif agent.warmth <= 0.35 or (warmth_focus >= 1.3 and agent.warmth <= 0.5):
+        needs.append("You are getting chilly. A house fire, the community hearth, or heading home would help.")
+    if agent.social_need >= 0.85:
+        needs.append("You feel deeply lonely. Seek out company at the plaza or visit someone.")
+    elif agent.social_need >= 0.6 or (social_focus >= 1.3 and agent.social_need >= 0.45):
+        needs.append("You could really use some conversation or a visit with someone.")
     if agent.energy < 0.3:
         if agent.position == agent.house_position:
             needs.append("Your energy is low. Sleeping at home is wise.")
@@ -336,6 +352,7 @@ def build_observation(
     return (
         f"=== Observation: Day {world.day}, tick {world.tick_count} ===\n"
         f"You are at {agent.position}. House: {agent.house_position}. Energy: {agent.energy:.2f}.\n"
+        f"Hunger {int(agent.hunger * 100)}%, warmth {int(agent.warmth * 100)}%, loneliness {int(agent.social_need * 100)}%.\n"
         f"Inventory: {json.dumps(agent.inventory, sort_keys=True)}.\n"
         f"Current action: {agent.current_action}. Last result: {agent.pending_result or 'none'}.\n"
         f"House fire: {'lit' if agent.house_fire_ticks > 0 else 'out'}.\n\n"
@@ -600,6 +617,17 @@ class HeuristicDecisionPolicy:
             opportunities.append((title, contribution))
         return opportunities
 
+    @staticmethod
+    def _extract_needs(text: str) -> dict[str, int]:
+        match = re.search(r"Hunger (\d+)%, warmth (\d+)%, loneliness (\d+)%", text)
+        if not match:
+            return {}
+        return {
+            "hunger": int(match.group(1)),
+            "warmth": int(match.group(2)),
+            "loneliness": int(match.group(3)),
+        }
+
     def decide(self, request: DecisionRequest) -> Decision:
         observation = request.observation
         observation_lower = observation.lower()
@@ -629,6 +657,35 @@ class HeuristicDecisionPolicy:
             return Decision("sleep", {"thought": "I need to sleep."}, "I need to sleep.")
         if "energy is low" in observation_lower and "nighttime" not in observation_lower:
             return Decision("rest", {"thought": "I should rest briefly before I overextend."}, "I should rest briefly before I overextend.")
+        personal_needs = self._extract_needs(request.observation)
+        if personal_needs.get("hunger", 0) >= 60:
+            hungry_tile = self._find_adjacent_tile(position, berry_tiles) or self._find_adjacent_tile(position, pond_tiles)
+            if hungry_tile and self._find_adjacent_tile(position, berry_tiles):
+                tile = self._find_adjacent_tile(position, berry_tiles)
+                return Decision("forage", {"tile_position": f"{tile[0]},{tile[1]}", "thought": "I am hungry and berries are right here."}, "I am hungry and berries are right here.")
+            if hungry_tile:
+                return Decision("fish", {"tile_position": f"{hungry_tile[0]},{hungry_tile[1]}", "thought": "I am hungry and the pond is right here."}, "I am hungry and the pond is right here.")
+            ripe_food = self._find_adjacent_tile(position, farm_tiles, "ripe")
+            if ripe_food:
+                return Decision("farm", {"action": "harvest", "tile_position": f"{ripe_food[0]},{ripe_food[1]}", "thought": "I am hungry and there is ripe food here."}, "I am hungry and there is ripe food here.")
+            if inventory.get("meal", 0) > 0:
+                return Decision("rest", {"thought": "I am hungry and carrying a cooked meal, so a rest with food is the fastest fix."}, "I am hungry and carrying a cooked meal, so a rest with food is the fastest fix.")
+            if berry_tiles or pond_tiles:
+                return Decision("move", {"target": "berry_grove" if berry_tiles else "village_pond", "thought": "I am hungry and should reach the nearest food source."}, "I am hungry and should reach the nearest food source.")
+        if personal_needs.get("warmth", 100) <= 35:
+            if position == self._extract_house(request.observation) and inventory.get("wood", 0) >= 1 and "house fire is lit" not in observation_lower:
+                return Decision("light_fire", {"thought": "I am cold and have wood, so a home fire is the obvious answer."}, "I am cold and have wood, so a home fire is the obvious answer.")
+            return Decision(
+                "move",
+                {"target": "my_house" if inventory.get("wood", 0) >= 1 else "community_hearth", "thought": "I am cold and need to get somewhere warm."},
+                "I am cold and need to get somewhere warm.",
+            )
+        if personal_needs.get("loneliness", 0) >= 60:
+            if "trade or speak with right now:" in observation_lower and "nobody" not in observation_lower.split("trade or speak with right now:")[1][:30]:
+                target_name = observation.split("trade or speak with right now:")[1].split(".")[0].split(",")[0].strip()
+                if target_name and target_name != "nobody":
+                    return Decision("speak", {"message": "I have been on my own too long. How are you?", "target": target_name, "thought": "I need company."}, "I need company.")
+            return Decision("move", {"target": "village_plaza", "thought": "I feel lonely and should find people."}, "I feel lonely and should find people.")
         adjacent_berries = self._find_adjacent_tile(position, berry_tiles)
         if village_stats.get("food", 7.0) <= 5.0 and adjacent_berries:
             tile = f"{adjacent_berries[0]},{adjacent_berries[1]}"

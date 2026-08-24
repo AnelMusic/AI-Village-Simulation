@@ -60,6 +60,9 @@ class AgentState:
     repeated_action_count: int = 0
     repeated_tool_count: int = 0
     house_fire_ticks: int = 0
+    hunger: float = 0.0
+    warmth: float = 1.0
+    social_need: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +89,9 @@ class AgentState:
             "repeated_action_count": self.repeated_action_count,
             "repeated_tool_count": self.repeated_tool_count,
             "house_fire_ticks": self.house_fire_ticks,
+            "hunger": self.hunger,
+            "warmth": self.warmth,
+            "social_need": self.social_need,
         }
 
     @classmethod
@@ -115,6 +121,9 @@ class AgentState:
             repeated_action_count=int(data.get("repeated_action_count", 0)),
             repeated_tool_count=int(data.get("repeated_tool_count", 0)),
             house_fire_ticks=int(data.get("house_fire_ticks", 0)),
+            hunger=float(data.get("hunger", 0.0)),
+            warmth=float(data.get("warmth", 1.0)),
+            social_need=float(data.get("social_need", 0.0)),
         )
 
 

@@ -103,6 +103,13 @@ class CharacterConfig(BaseModel):
     house_position: tuple[int, int]
     personality: str
     starting_inventory: dict[str, int] = Field(default_factory=lambda: {"wood": 1, "wheat": 2})
+    traits: dict[str, float] = Field(
+        default_factory=lambda: {"food_focus": 1.0, "warmth_focus": 1.0, "social_focus": 1.0}
+    )
+
+    def trait(self, key: str) -> float:
+        value = self.traits.get(key, 1.0)
+        return max(0.25, min(2.5, value))
 
     @model_validator(mode="after")
     def validate_color_and_house(self) -> "CharacterConfig":
