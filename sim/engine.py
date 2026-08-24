@@ -16,6 +16,7 @@ from .agent import (
     DecisionRequest,
     HeuristicDecisionPolicy,
     OpenAIDecisionPolicy,
+    ResilientDecisionPolicy,
     build_observation,
     build_system_prompt,
 )
@@ -66,7 +67,7 @@ class SimulationEngine:
 
     def _build_default_policy(self) -> DecisionPolicy:
         if self.config.openai_key:
-            return OpenAIDecisionPolicy(self.config)
+            return ResilientDecisionPolicy(OpenAIDecisionPolicy(self.config))
         return HeuristicDecisionPolicy()
 
     def _load_or_create_relationships(self) -> RelationshipGraph:

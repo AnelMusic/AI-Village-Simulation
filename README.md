@@ -112,9 +112,11 @@ Preferred:
 $env:OPENAI_API_KEY="sk-..."
 ```
 
-You can also place the key in `config.yaml`, but using an environment variable is strongly recommended.
+You can also place the key in `config.yaml`, but using an environment variable is strongly recommended. The shipped config leaves `openai_key: null`, so behavior is driven by the environment variable, never by a placeholder string.
 
 If no key is present, the simulation still runs with a deterministic fallback policy.
+
+Live API calls are wrapped in a resilience layer: transient errors (rate limits, timeouts, 5xx) are retried with exponential backoff plus jitter, and after repeated failures a circuit breaker delegates decisions to the heuristic policy so the village keeps acting instead of silently stalling.
 
 ## How To Run
 
@@ -180,8 +182,10 @@ What they do:
 
 In the Pygame viewer:
 
-- Click a villager to inspect them
+- Click a villager to inspect them (click empty map to deselect)
 - Use the mouse wheel over the inspector to scroll
+- Press SPACE to pause or resume the simulation
+- Press ESC to quit
 - Resize the window freely
 
 The inspector shows:
@@ -190,6 +194,7 @@ The inspector shows:
 - energy
 - inventory
 - latest thought
+- recent memories
 - relationship summaries
 - village state
 - project progress
@@ -209,11 +214,7 @@ You can change:
 - colors
 - house positions
 - personalities
-- starting inventory overrides
-
-Important note:
-
-- The world generator currently gives every villager a generous baseline inventory boost at world creation so the simulation has more room to branch early.
+- starting inventories (villagers start with exactly these)
 
 ## Data And Persistence
 
@@ -270,6 +271,7 @@ The project is split into a simulation core and a renderer.
   - system prompt construction
   - OpenAI-backed decision policy
   - heuristic fallback policy
+  - retry/backoff and circuit-breaker wrapper for live API calls
 - `sim/relationships.py`
   - trust
   - trade count
@@ -377,8 +379,7 @@ The project works, but it is still rough in important ways.
 - Social behavior is better than before, but alliances, gifts, and favors still need more tuning to create rich long-term politics.
 - Public projects are meaningful, but agents can over-prioritize them once they identify them as high-value.
 - Market hour creates convergence, but trade frequency is still lower than ideal for a village economy sim.
-- Headless runs with live models can hit OpenAI rate limits, especially at higher tick rates or with too much repeated reasoning.
-- There is currently no exponential backoff/retry system for rate-limit handling, so `429` errors can still appear in logs and temporarily degrade behavior.
+- Headless runs with live models can hit OpenAI rate limits at high tick rates; retries with backoff and a heuristic circuit breaker now soften this, but sustained outages still degrade to heuristic behavior.
 - Some emergent behavior is interesting, but the village can still feel too optimization-driven instead of fully alive.
 
 ## What Needs Improvement Next
@@ -392,7 +393,6 @@ The best next steps would be:
 - better trade economics and scarcity balancing
 - event systems that force re-prioritization
 - stronger differentiation between home life, work life, and social life
-- retry/backoff for API failures and rate limits
 - clearer in-world signs that a project or social system has changed behavior
 
 ## Why The Logs Matter

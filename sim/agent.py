@@ -3,10 +3,18 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 import json
+import random
 import re
+import time
 from typing import Any, Protocol
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
 from .config import AppConfig
 from .memory import MemoryStore
@@ -383,6 +391,91 @@ class OpenAIDecisionPolicy:
                 )
 
         return Decision(tool_name="wait", arguments={"thought": "No tool call returned."}, thought="No tool call returned.", usage=usage)
+
+
+RETRYABLE_API_ERRORS: tuple[type[Exception], ...] = (
+    RateLimitError,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+)
+
+
+class ResilientDecisionPolicy:
+    """Wraps a primary LLM policy with retry/backoff and a circuit breaker.
+
+    Transient API errors (rate limits, timeouts, 5xx) are retried with
+    exponential backoff plus jitter. After repeated failures the circuit
+    opens and decisions are delegated to the heuristic fallback policy,
+    so a broken key or a sustained outage degrades to visible heuristic
+    behavior instead of silent eternal waiting.
+    """
+
+    def __init__(
+        self,
+        primary: DecisionPolicy,
+        fallback: DecisionPolicy | None = None,
+        *,
+        retryable_errors: tuple[type[Exception], ...] = RETRYABLE_API_ERRORS,
+        max_attempts: int = 3,
+        base_delay: float = 0.5,
+        max_delay: float = 8.0,
+        failure_threshold: int = 5,
+        cooldown_calls: int = 10,
+        sleeper=time.sleep,
+        jitter=random.random,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback if fallback is not None else HeuristicDecisionPolicy()
+        self.retryable_errors = retryable_errors
+        self.max_attempts = max_attempts
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.failure_threshold = failure_threshold
+        self.cooldown_calls = cooldown_calls
+        self._sleep = sleeper
+        self._jitter = jitter
+        self._consecutive_failures = 0
+        self._open_remaining = 0
+
+    def _backoff_delay(self, attempt: int) -> float:
+        delay = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
+        return delay * (0.5 + self._jitter())
+
+    def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.failure_threshold and self._open_remaining <= 0:
+            self._open_remaining = self.cooldown_calls
+            print(
+                f"[policy] circuit open after {self._consecutive_failures} consecutive API failures: "
+                f"using heuristic fallback for the next {self.cooldown_calls} decisions"
+            )
+
+    def decide(self, request: DecisionRequest) -> Decision:
+        if self._open_remaining > 0:
+            self._open_remaining -= 1
+            return self.fallback.decide(request)
+
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                decision = self.primary.decide(request)
+            except self.retryable_errors:
+                if attempt < self.max_attempts:
+                    self._sleep(self._backoff_delay(attempt))
+                    continue
+                self._record_failure()
+                return self.fallback.decide(request)
+            except Exception as exc:
+                self._record_failure()
+                print(f"[policy] non-retryable API error, using heuristic fallback: {exc}")
+                return self.fallback.decide(request)
+
+            if self._consecutive_failures:
+                print(f"[policy] API recovered after {self._consecutive_failures} consecutive failure(s)")
+                self._consecutive_failures = 0
+            return decision
+
+        return self.fallback.decide(request)
 
 
 class HeuristicDecisionPolicy:
