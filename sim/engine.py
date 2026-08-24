@@ -640,6 +640,32 @@ class SimulationEngine:
             thought="I have looped on wood too long. I should switch tasks and go where people and food are.",
         )
 
+    def _log_engine_override(self, agent: AgentState, original: Decision, overridden: Decision, stage: str) -> None:
+        """Record an engine intervention as its own event row.
+
+        The agent's own thought is never replaced; the override carries its
+        own reasoning so experiment logs can distinguish "the LLM decided X"
+        from "the engine forced X".
+        """
+        event = self.action_resolver._record_event(
+            kind="engine_override",
+            actor=agent.name,
+            summary=f"Engine override ({stage}): {original.tool_name} -> {overridden.tool_name}.",
+            location=agent.position,
+            public=False,
+            metadata={
+                "stage": stage,
+                "original_tool": original.tool_name,
+                "original_arguments": original.arguments,
+                "override_tool": overridden.tool_name,
+                "override_arguments": overridden.arguments,
+                "reason": overridden.thought,
+            },
+        )
+        self._append_event_row(event, f"[engine_override:{stage}] {overridden.thought}")
+        if self.config.log_thoughts:
+            print(f"[{agent.name}] reroute: {stage} {original.tool_name} -> {overridden.tool_name}")
+
     def _apply_decision(self, agent: AgentState, decision: Decision) -> None:
         previous_tool = agent.last_tool
         thought = decision.arguments.get("thought", decision.thought)
@@ -659,42 +685,35 @@ class SimulationEngine:
             print(f"[{agent.name}] {decision.tool_name}: {thought}")
         self.cost_tracker.record(decision.usage)
 
+        original_decision = decision
+
         escaped_decision = self._escape_repetitive_decision(agent, decision)
         if escaped_decision is not decision:
             decision = escaped_decision
-            agent.last_thought = escaped_decision.thought
             agent.last_tool = escaped_decision.tool_name
-            if self.config.log_thoughts:
-                print(f"[{agent.name}] reroute: repetitive {action_signature} -> {decision.tool_name}")
+            self._log_engine_override(agent, original_decision, decision, "anti_loop")
 
         corrected_decision = self._reroute_low_energy_decision(agent, decision)
         if corrected_decision is not decision:
             decision = corrected_decision
-            agent.last_thought = corrected_decision.thought
             agent.last_tool = corrected_decision.tool_name
-            if self.config.log_thoughts:
-                print(f"[{agent.name}] reroute: low-energy -> {decision.tool_name}")
+            self._log_engine_override(agent, original_decision, decision, "low_energy")
 
         corrected_decision = self._correct_action_target(agent, decision)
         if corrected_decision is not decision:
             decision = corrected_decision
-            agent.last_thought = corrected_decision.thought
             agent.last_tool = corrected_decision.tool_name
-            if self.config.log_thoughts:
-                print(f"[{agent.name}] reroute: invalid-target -> {decision.tool_name}")
+            self._log_engine_override(agent, original_decision, decision, "invalid_target")
 
         if decision.tool_name == "sleep" and agent.position != agent.house_position:
-            rerouted = Decision(
+            decision = Decision(
                 tool_name="move",
                 arguments={"target": "my_house", "thought": "I need to get home before I can sleep."},
                 thought="I need to get home before I can sleep.",
                 usage=decision.usage,
             )
-            decision = rerouted
-            agent.last_thought = rerouted.thought
-            agent.last_tool = rerouted.tool_name
-            if self.config.log_thoughts:
-                print(f"[{agent.name}] reroute: sleep -> move(my_house)")
+            agent.last_tool = decision.tool_name
+            self._log_engine_override(agent, original_decision, decision, "sleep_needs_home")
 
         if decision.tool_name == "sleep" and agent.energy > 0.85:
             decision = Decision(
@@ -703,8 +722,8 @@ class SimulationEngine:
                 thought="I am not tired enough to sleep, so I should pause or reconsider.",
                 usage=decision.usage,
             )
-            agent.last_thought = decision.thought
             agent.last_tool = decision.tool_name
+            self._log_engine_override(agent, original_decision, decision, "sleep_not_tired")
 
         if decision.tool_name == "move":
             target = self.resolve_move_target(agent.name, str(decision.arguments["target"]))

@@ -27,7 +27,16 @@ def test_engine_reroutes_exhausted_agents_to_recovery(app_config) -> None:
     )
 
     assert mira.last_tool == "move"
-    assert "recover" in mira.last_thought.lower()
+    # The agent's own reasoning is preserved, never replaced by engine text.
+    assert "keep chopping" in mira.last_thought.lower()
+    assert "recover" not in mira.last_thought.lower()
+    # The intervention is visible as its own engine_override event row.
+    overrides = [event for event in engine.world.recent_events if event.kind == "engine_override"]
+    assert overrides
+    assert overrides[-1].actor == "Mira"
+    assert overrides[-1].metadata["original_tool"] == "chop_wood"
+    assert overrides[-1].metadata["override_tool"] == "move"
+    assert "low_energy" == overrides[-1].metadata["stage"]
     assert mira.pending_result is not None and "Moving toward" in mira.pending_result
 
 
