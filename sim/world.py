@@ -347,6 +347,13 @@ class ProjectState:
             parts.append(f"{name} ({item_text})")
         return "; ".join(parts)
 
+    def fraction_complete(self) -> float:
+        required_total = sum(self.required.values())
+        if required_total <= 0:
+            return 1.0
+        done = sum(min(self.progress.get(item, 0), amount) for item, amount in self.required.items())
+        return done / required_total
+
     def remaining(self) -> dict[str, int]:
         return {item: max(0, self.required.get(item, 0) - self.progress.get(item, 0)) for item in self.required}
 
@@ -379,6 +386,7 @@ class WorldState:
     recent_events: list[WorldEvent] = field(default_factory=list)
     active_event: dict[str, Any] | None = None
     season: str = "spring"
+    activity_heatmap: list[list[int]] = field(default_factory=list)
 
     def tile_at(self, position: tuple[int, int]) -> Tile:
         x, y = position
@@ -427,6 +435,7 @@ class WorldState:
             "recent_events": [event.to_dict() for event in self.recent_events[-200:]],
             "active_event": dict(self.active_event) if self.active_event else None,
             "season": self.season,
+            "activity_heatmap": [list(row) for row in self.activity_heatmap] if self.activity_heatmap else [],
         }
 
     @classmethod
@@ -471,6 +480,7 @@ class WorldState:
             recent_events=recent_events,
             active_event=dict(data["active_event"]) if data.get("active_event") else None,
             season=str(data.get("season", "spring")),
+            activity_heatmap=[list(row) for row in data.get("activity_heatmap", [])],
         )
 
     def save(self, path: str | Path) -> None:
@@ -690,4 +700,5 @@ def generate_world(config: AppConfig) -> WorldState:
         village_warmth=5.4,
         village_morale=6.4,
         market_active_until_tick=6,
+        activity_heatmap=[[0 for _ in range(size)] for _ in range(size)],
     )

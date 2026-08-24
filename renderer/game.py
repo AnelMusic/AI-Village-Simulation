@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import pygame
@@ -11,12 +12,14 @@ if TYPE_CHECKING:
 
 SIDEBAR_WIDTH = 360
 HEADER_HEIGHT = 56
+TAB_HEIGHT = 26
 SCROLL_STEP = 28
 HUD_COLOR = (24, 26, 32)
 SIDEBAR_COLOR = (30, 32, 40)
 TEXT_COLOR = (230, 230, 235)
 MUTED_COLOR = (160, 162, 172)
 ACCENT_COLOR = (240, 200, 90)
+PLAN_COLOR = (150, 190, 250)
 
 TILE_COLORS: dict[str, tuple[int, int, int]] = {
     "grass": (100, 158, 96),
@@ -53,6 +56,10 @@ SITE_LABELS: dict[str, str] = {
     "hearth_seat_feature": "",
 }
 
+ZOOM_MIN, ZOOM_MAX = 0.6, 3.0
+SPEEDS = (1.0, 3.0, 8.0)
+TABS = ("villager", "memories", "relationships")
+
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -64,9 +71,12 @@ class PygameRenderer:
     The renderer is a reader, not the source of truth: it draws whatever the
     engine's world state contains. Controls:
       - click a villager to inspect them (click empty map to deselect)
-      - mouse wheel over the inspector scrolls it
-      - SPACE pauses/resumes the simulation, ESC quits
-      - the window can be resized freely
+      - mouse wheel over the inspector scrolls it; over the map it zooms
+      - drag with the right mouse button (or arrow keys) to pan the camera
+      - SPACE pauses/resumes, 1/2/3 set speed to 1x/3x/8x
+      - T cycles inspector tabs (villager / memories / relationships)
+      - R toggles the relationship-graph overlay, H the activity heatmap
+      - ESC quits; the window can be resized freely
     """
 
     def __init__(self, engine: SimulationEngine, width: int = 1180, height: int = 760) -> None:
@@ -80,9 +90,18 @@ class PygameRenderer:
         self.engine = engine
         self.running = True
         self.paused = False
+        self.speed_index = 0
         self.selected_agent: str | None = None
         self.inspector_scroll = 0
+        self.inspector_tab = "villager"
         self._inspector_content_height = 0
+        self._tab_rects: dict[str, pygame.Rect] = {}
+        self.zoom = 1.0
+        self.camera = [0, 0]
+        self.show_relationships = False
+        self.show_heatmap = False
+        self._panning = False
+        self._pan_start = (0, 0)
 
     # ------------------------------------------------------------------ loop
 
@@ -91,7 +110,8 @@ class PygameRenderer:
             dt = self.clock.tick(60) / 1000.0
             self.process_events()
             if not self.paused:
-                self.engine.update(dt if dt > 0 else 0.016)
+                scaled = dt * SPEEDS[self.speed_index]
+                self.engine.update(scaled if scaled > 0 else 0.016)
             self.render_frame()
         self.engine.maybe_autosave()
 
@@ -105,19 +125,63 @@ class PygameRenderer:
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.running = False
-                elif event.key == pygame.K_SPACE:
-                    self.paused = not self.paused
+                self._handle_key(event.key)
             elif event.type == pygame.VIDEORESIZE:
                 self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self._handle_click(event.pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                self._panning = True
+                self._pan_start = event.pos
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+                self._panning = False
+            elif event.type == pygame.MOUSEMOTION and self._panning:
+                dx = event.pos[0] - self._pan_start[0]
+                dy = event.pos[1] - self._pan_start[1]
+                self.camera[0] += dx
+                self.camera[1] += dy
+                self._pan_start = event.pos
+                self._clamp_camera()
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
                 self._handle_scroll(event.pos, event.button)
 
+    def _handle_key(self, key: int) -> None:
+        if key == pygame.K_ESCAPE:
+            self.running = False
+        elif key == pygame.K_SPACE:
+            self.paused = not self.paused
+        elif key == pygame.K_1:
+            self.speed_index = 0
+        elif key == pygame.K_2:
+            self.speed_index = 1
+        elif key == pygame.K_3:
+            self.speed_index = 2
+        elif key == pygame.K_t:
+            self.inspector_tab = TABS[(TABS.index(self.inspector_tab) + 1) % len(TABS)]
+            self.inspector_scroll = 0
+        elif key == pygame.K_r:
+            self.show_relationships = not self.show_relationships
+        elif key == pygame.K_h:
+            self.show_heatmap = not self.show_heatmap
+        elif key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN):
+            step = 40
+            if key == pygame.K_LEFT:
+                self.camera[0] += step
+            elif key == pygame.K_RIGHT:
+                self.camera[0] -= step
+            elif key == pygame.K_UP:
+                self.camera[1] += step
+            else:
+                self.camera[1] -= step
+            self._clamp_camera()
+
     def _handle_click(self, position: tuple[int, int]) -> None:
         if position[0] >= self.screen.get_width() - SIDEBAR_WIDTH:
+            for tab_name, rect in self._tab_rects.items():
+                if rect.collidepoint(position):
+                    self.inspector_tab = tab_name
+                    self.inspector_scroll = 0
+                    return
             return
         hit = self._agent_at(position)
         self.selected_agent = hit.name if hit is not None else None
@@ -125,12 +189,17 @@ class PygameRenderer:
 
     def _handle_scroll(self, position: tuple[int, int], button: int) -> None:
         if position[0] < self.screen.get_width() - SIDEBAR_WIDTH:
+            factor = 1.15 if button == 4 else 1 / 1.15
+            self.zoom = _clamp(self.zoom * factor, ZOOM_MIN, ZOOM_MAX)
+            self._clamp_camera()
             return
         direction = -1 if button == 4 else 1
-        self.inspector_scroll = _clamp(
-            self.inspector_scroll + direction * SCROLL_STEP,
-            0,
-            max(0, self._inspector_content_height - self._inspector_view_height()),
+        self.inspector_scroll = int(
+            _clamp(
+                self.inspector_scroll + direction * SCROLL_STEP,
+                0,
+                max(0, self._inspector_content_height - self._inspector_view_height()),
+            )
         )
 
     # ------------------------------------------------------------- geometry
@@ -139,18 +208,30 @@ class PygameRenderer:
         width, height = self.screen.get_size()
         return 0, HEADER_HEIGHT, max(1, width - SIDEBAR_WIDTH), max(1, height - HEADER_HEIGHT)
 
-    def _tile_size(self) -> int:
+    def _base_tile_size(self) -> int:
         mx, my, mw, mh = self._map_area()
         world = self.engine.world
         return max(4, min(mw // world.size, mh // world.size))
+
+    def _tile_size(self) -> int:
+        return max(3, int(self._base_tile_size() * self.zoom))
 
     def _map_origin(self) -> tuple[int, int]:
         mx, my, mw, mh = self._map_area()
         world = self.engine.world
         tile = self._tile_size()
-        ox = mx + (mw - tile * world.size) // 2
-        oy = my + (mh - tile * world.size) // 2
+        ox = mx + (mw - tile * world.size) // 2 + self.camera[0]
+        oy = my + (mh - tile * world.size) // 2 + self.camera[1]
         return ox, oy
+
+    def _clamp_camera(self) -> None:
+        mx, my, mw, mh = self._map_area()
+        world = self.engine.world
+        map_px = self._tile_size() * world.size
+        limit_x = max(mw, map_px)
+        limit_y = max(mh, map_px)
+        self.camera[0] = int(_clamp(self.camera[0], -limit_x, limit_x))
+        self.camera[1] = int(_clamp(self.camera[1], -limit_y, limit_y))
 
     def _tile_rect(self, x: int, y: int) -> pygame.Rect:
         ox, oy = self._map_origin()
@@ -177,14 +258,19 @@ class PygameRenderer:
         return best if best_distance <= reach else None
 
     def _inspector_view_height(self) -> int:
-        return self.screen.get_height() - HEADER_HEIGHT
+        return self.screen.get_height() - HEADER_HEIGHT - TAB_HEIGHT
 
     # -------------------------------------------------------------- drawing
 
     def render_frame(self) -> None:
         self.screen.fill(HUD_COLOR)
         self._draw_map()
+        if self.show_heatmap:
+            self._draw_heatmap()
         self._draw_agents()
+        self._draw_event_feed()
+        if self.show_relationships:
+            self._draw_relationship_overlay()
         self._draw_header()
         self._draw_sidebar()
         pygame.display.flip()
@@ -195,6 +281,8 @@ class PygameRenderer:
             for x in range(world.size):
                 tile = world.grid[y][x]
                 rect = self._tile_rect(x, y)
+                if not self.screen.get_rect().colliderect(rect):
+                    continue
                 color = TILE_COLORS.get(tile.kind, TILE_COLORS["grass"])
                 pygame.draw.rect(self.screen, color, rect)
                 if tile.kind == "farm":
@@ -220,6 +308,22 @@ class PygameRenderer:
             surface.fill((10, 14, 40, night_alpha))
             self.screen.blit(surface, (mx, my))
 
+    def _draw_heatmap(self) -> None:
+        world = self.engine.world
+        heatmap = world.activity_heatmap
+        if not heatmap:
+            return
+        for y in range(min(world.size, len(heatmap))):
+            for x in range(min(world.size, len(heatmap[y]))):
+                visits = heatmap[y][x]
+                if visits <= 0:
+                    continue
+                rect = self._tile_rect(x, y)
+                alpha = min(165, 25 + visits * 6)
+                surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                surface.fill((235, 90, 40, alpha))
+                self.screen.blit(surface, rect.topleft)
+
     def _draw_site_label(self, position: tuple[int, int], label: str) -> None:
         if not label:
             return
@@ -243,6 +347,12 @@ class PygameRenderer:
                 self.screen.blit(label, (cx + radius - 2, cy - radius - 10))
 
             if tile >= 14:
+                if agent.plan is not None:
+                    plan_text = f"plan: {agent.plan.goal}"
+                    if len(plan_text) > 26:
+                        plan_text = plan_text[:23] + "..."
+                    plan_surface = self.small_font.render(plan_text, True, PLAN_COLOR)
+                    self.screen.blit(plan_surface, plan_surface.get_rect(midbottom=(cx, cy - radius - 18)))
                 name = self.small_font.render(agent.name, True, TEXT_COLOR)
                 self.screen.blit(name, name.get_rect(midbottom=(cx, cy - radius - 2)))
 
@@ -280,6 +390,79 @@ class PygameRenderer:
         pygame.draw.rect(self.screen, (90, 90, 100), box, 1, border_radius=6)
         self.screen.blit(surface, surface.get_rect(center=box.center))
 
+    def _draw_event_feed(self) -> None:
+        world = self.engine.world
+        public_events = [event for event in world.recent_events if event.public][-6:]
+        if not public_events:
+            return
+        x, y = 10, self.screen.get_height() - 10 - len(public_events) * 18
+        panel = pygame.Rect(x - 4, y - 4, 480, len(public_events) * 18 + 8)
+        surface = pygame.Surface(panel.size, pygame.SRCALPHA)
+        surface.fill((16, 18, 24, 170))
+        self.screen.blit(surface, panel.topleft)
+        for event in public_events:
+            text = event.summary
+            if len(text) > 70:
+                text = text[:67] + "..."
+            age = world.tick_count - event.tick
+            color = TEXT_COLOR if age <= 10 else MUTED_COLOR
+            line = self.small_font.render(text, True, color)
+            self.screen.blit(line, (x, y))
+            y += 18
+
+    def _draw_relationship_overlay(self) -> None:
+        world = self.engine.world
+        names = sorted(world.agents.keys())
+        if len(names) < 2:
+            return
+        mx, my, mw, mh = self._map_area()
+        center = (mx + mw // 2, my + mh // 2)
+        radius = min(mw, mh) // 3
+        panel = pygame.Rect(0, 0, radius * 2 + 140, radius * 2 + 60)
+        panel.center = center
+        surface = pygame.Surface(panel.size, pygame.SRCALPHA)
+        surface.fill((16, 18, 24, 200))
+        self.screen.blit(surface, panel.topleft)
+        title = self.font.render("Relationships (R to hide)", True, ACCENT_COLOR)
+        self.screen.blit(title, (panel.left + 12, panel.top + 6))
+
+        positions: dict[str, tuple[int, int]] = {}
+        for index, name in enumerate(names):
+            angle = 2 * math.pi * index / len(names) - math.pi / 2
+            positions[name] = (
+                panel.center[0] + int(radius * math.cos(angle)),
+                panel.center[1] + int(radius * math.sin(angle)),
+            )
+
+        graph = self.engine.relationships.graph
+        for i, first in enumerate(names):
+            for second in names[i + 1 :]:
+                if first not in graph or second not in graph[first]:
+                    continue
+                relation = graph[first][second]
+                start = positions[first]
+                end = positions[second]
+                if relation.allied:
+                    color = ACCENT_COLOR
+                    width = 3
+                elif relation.trust >= 0.1:
+                    color = (120, 220, 120)
+                    width = max(1, int(abs(relation.trust) * 4))
+                elif relation.trust <= -0.1:
+                    color = (220, 110, 110)
+                    width = max(1, int(abs(relation.trust) * 4))
+                else:
+                    color = (110, 112, 122)
+                    width = 1
+                pygame.draw.line(self.screen, color, start, end, width)
+
+        for name, position in positions.items():
+            agent = world.agents[name]
+            pygame.draw.circle(self.screen, (20, 20, 24), position, 13)
+            pygame.draw.circle(self.screen, agent.sprite_color, position, 12)
+            label = self.small_font.render(name, True, TEXT_COLOR)
+            self.screen.blit(label, label.get_rect(midtop=(position[0], position[1] + 14)))
+
     def _draw_header(self) -> None:
         world = self.engine.world
         width = self.screen.get_width()
@@ -298,12 +481,11 @@ class PygameRenderer:
             chips.append(world.active_event["kind"].upper())
         if world.is_market_active():
             chips.append("MARKET HOUR")
-        if self.paused:
-            chips.append("PAUSED (SPACE)")
-        if self.engine.world.pending_trades:
-            pending = sum(1 for t in self.engine.world.pending_trades.values() if t.status == "pending")
-            if pending:
-                chips.append(f"TRADES PENDING: {pending}")
+        chips.append(f"{SPEEDS[self.speed_index]:g}x" + (" PAUSED" if self.paused else ""))
+        if self.show_relationships:
+            chips.append("RELATIONSHIPS")
+        if self.show_heatmap:
+            chips.append("HEATMAP")
         x = 14
         y = 34
         for chip in chips:
@@ -313,37 +495,43 @@ class PygameRenderer:
             pygame.draw.rect(self.screen, ACCENT_COLOR, rect, border_radius=4)
             self.screen.blit(surface, (x + 5, y + 2))
             x += rect.width + 8
+        hints = self.small_font.render(
+            "SPACE pause | 1/2/3 speed | wheel zoom | right-drag pan | T tabs | R relations | H heat", True, MUTED_COLOR
+        )
+        self.screen.blit(hints, (width - SIDEBAR_WIDTH - hints.get_width() - 10, 38))
 
     def _draw_sidebar(self) -> None:
         width, height = self.screen.get_size()
         sidebar_rect = pygame.Rect(width - SIDEBAR_WIDTH, HEADER_HEIGHT, SIDEBAR_WIDTH, height - HEADER_HEIGHT)
         pygame.draw.rect(self.screen, SIDEBAR_COLOR, sidebar_rect)
         pygame.draw.line(self.screen, (50, 52, 62), (sidebar_rect.left, sidebar_rect.top), (sidebar_rect.left, sidebar_rect.bottom), 2)
+        self._draw_tabs(sidebar_rect)
 
-        lines: list[tuple[str, pygame.Color | tuple[int, int, int], int]] = []
+        lines: list[tuple] = []
         lines.extend(self._village_lines())
         lines.append(("", TEXT_COLOR, 8))
         lines.extend(self._project_lines())
         lines.append(("", TEXT_COLOR, 8))
         if self.selected_agent:
-            lines.extend(self._agent_lines(self.selected_agent))
+            lines.extend(self._selected_agent_lines(self.selected_agent))
         else:
             hint = self.font.render("Click a villager to inspect them", True, MUTED_COLOR)
-            self.screen.blit(hint, (sidebar_rect.left + 12, sidebar_rect.top + 10))
+            self.screen.blit(hint, (sidebar_rect.left + 12, sidebar_rect.top + TAB_HEIGHT + 10))
 
-        # Manual layout pass: measure, clamp scroll, then draw.
-        content_height = sum(line_height for _, _, line_height in lines)
+        content_height = sum(line[2] for line in lines)
         self._inspector_content_height = content_height
         self.inspector_scroll = int(
             _clamp(self.inspector_scroll, 0, max(0, content_height - self._inspector_view_height()))
         )
 
         clip = sidebar_rect.copy()
-        clip.top += 8
-        clip.height -= 16
-        y_offset = sidebar_rect.top + 8 - self.inspector_scroll
+        clip.top += TAB_HEIGHT + 6
+        clip.height -= TAB_HEIGHT + 12
+        y_offset = sidebar_rect.top + TAB_HEIGHT + 6 - self.inspector_scroll
         max_x = sidebar_rect.right - 10
-        for text, color, line_height in lines:
+        for line in lines:
+            text, color, line_height = line[0], line[1], line[2]
+            progress = line[3] if len(line) > 3 else None
             target_rect = pygame.Rect(sidebar_rect.left + 12, y_offset, SIDEBAR_WIDTH - 24, line_height)
             if target_rect.bottom >= clip.top and target_rect.top <= clip.bottom and text:
                 for wrapped in self._wrap_text(text, self.font, SIDEBAR_WIDTH - 28):
@@ -357,11 +545,35 @@ class PygameRenderer:
             else:
                 for wrapped in self._wrap_text(text, self.font, SIDEBAR_WIDTH - 28):
                     y_offset += self.font.size(wrapped)[1] + 1
+            if progress is not None and target_rect.bottom >= clip.top and target_rect.top <= clip.bottom:
+                bar_rect = pygame.Rect(sidebar_rect.right - 78, y_offset - 14, 64, 6)
+                pygame.draw.rect(self.screen, (44, 46, 56), bar_rect)
+                fill = pygame.Rect(bar_rect.topleft, (int(bar_rect.width * _clamp(progress, 0.0, 1.0)), bar_rect.height))
+                pygame.draw.rect(self.screen, (120, 210, 130), fill)
             y_offset += 2
 
-    def _village_lines(self) -> list[tuple[str, tuple[int, int, int], int]]:
+    def _draw_tabs(self, sidebar_rect: pygame.Rect) -> None:
+        self._tab_rects = {}
+        x = sidebar_rect.left + 2
+        for tab in TABS:
+            label = tab.capitalize()
+            selected = self.inspector_tab == tab
+            surface = self.font.render(label, True, (24, 24, 30) if selected else MUTED_COLOR)
+            rect = surface.get_rect(topleft=(x + 8, sidebar_rect.top + 4))
+            rect = rect.inflate(12, 6)
+            pygame.draw.rect(
+                self.screen,
+                ACCENT_COLOR if selected else (40, 42, 52),
+                rect,
+                border_radius=4,
+            )
+            self.screen.blit(surface, (rect.left + 6, rect.top + 3))
+            self._tab_rects[tab] = rect
+            x += rect.width + 6
+
+    def _village_lines(self) -> list[tuple]:
         world = self.engine.world
-        lines = [(f"Village state", ACCENT_COLOR, 24)]
+        lines = [("Village state", ACCENT_COLOR, 24)]
         lines.append((f"Food    {world.village_food:5.1f} / 12   {'#' * int(world.village_food)}", TEXT_COLOR, 20))
         lines.append((f"Warmth  {world.village_warmth:5.1f} / 12   {'#' * int(world.village_warmth)}", TEXT_COLOR, 20))
         lines.append((f"Morale  {world.village_morale:5.1f} / 12   {'#' * int(world.village_morale)}", TEXT_COLOR, 20))
@@ -369,19 +581,26 @@ class PygameRenderer:
         lines.append((f"Villagers: {agents}", MUTED_COLOR, 20))
         return lines
 
-    def _project_lines(self) -> list[tuple[str, tuple[int, int, int], int]]:
+    def _project_lines(self) -> list[tuple]:
         lines = [("Public projects", ACCENT_COLOR, 24)]
         for project in self.engine.world.public_projects.values():
             if project.completed:
                 lines.append((f"{project.title}: completed. Built by {project.contributor_summary()}", (140, 220, 140), 20))
             else:
                 remaining = ", ".join(f"{item}:{amount}" for item, amount in project.remaining().items() if amount > 0)
-                lines.append((f"{project.title}: needs {remaining}", TEXT_COLOR, 20))
+                lines.append((f"{project.title}: needs {remaining}", TEXT_COLOR, 20, project.fraction_complete()))
                 if project.contributors:
                     lines.append((f"  by {project.contributor_summary()}", MUTED_COLOR, 18))
         return lines
 
-    def _agent_lines(self, name: str) -> list[tuple[str, tuple[int, int, int], int]]:
+    def _selected_agent_lines(self, name: str) -> list[tuple]:
+        if self.inspector_tab == "memories":
+            return self._memory_lines(name)
+        if self.inspector_tab == "relationships":
+            return self._relationship_lines(name)
+        return self._villager_lines(name)
+
+    def _villager_lines(self, name: str) -> list[tuple]:
         world = self.engine.world
         agent = world.agents.get(name)
         if agent is None:
@@ -389,7 +608,7 @@ class PygameRenderer:
             return []
         lines = [(f"{name} (click map to deselect)", ACCENT_COLOR, 26)]
         if agent.plan is not None:
-            lines.append((f"Plan: {agent.plan.describe()}", (180, 200, 240), 20))
+            lines.append((f"Plan: {agent.plan.describe()}", PLAN_COLOR, 20))
         lines.append((f"Action: {agent.current_action}", TEXT_COLOR, 20))
         lines.append((f"Position: {agent.position}   House: {agent.house_position}", TEXT_COLOR, 20))
         lines.append((f"Energy: {agent.energy:.2f}{'  (sleeping)' if agent.is_sleeping else ''}", TEXT_COLOR, 20))
@@ -405,14 +624,50 @@ class PygameRenderer:
         lines.append((f"Thought: {agent.last_thought or 'none yet'}", (180, 200, 240), 20))
         if agent.pending_result:
             lines.append((f"Last result: {agent.pending_result}", MUTED_COLOR, 20))
-        memory_lines = self.engine.memory_store.get(name).recall_lines(limit=3)
-        if memory_lines:
-            lines.append(("Recent memories:", ACCENT_COLOR, 22))
-            lines.extend((f"- {item}", MUTED_COLOR, 20) for item in memory_lines)
-        relationship_lines = self.engine.relationships.summary_for(name)
-        if relationship_lines:
-            lines.append(("Relationships:", ACCENT_COLOR, 22))
-            lines.extend((f"- {item}", MUTED_COLOR, 20) for item in relationship_lines)
+        lines.append(("", TEXT_COLOR, 6))
+        lines.append(("Recent events involving them:", ACCENT_COLOR, 22))
+        events = [
+            event for event in world.recent_events if event.actor == name or event.target == name
+        ][-6:]
+        if events:
+            lines.extend((f"- {event.summary}", MUTED_COLOR, 20) for event in events)
+        else:
+            lines.append(("- Nothing yet", MUTED_COLOR, 20))
+        return lines
+
+    def _memory_lines(self, name: str) -> list[tuple]:
+        lines = [(f"{name} - memories (T for other tabs)", ACCENT_COLOR, 26)]
+        memory = self.engine.memory_store.get(name)
+        summaries = memory.summaries[-4:]
+        if summaries:
+            lines.append(("Condensed history:", ACCENT_COLOR, 22))
+            lines.extend((f"[Day {item.day}] {item.summary}", MUTED_COLOR, 20) for item in summaries)
+        recent = memory.recent[-14:]
+        lines.append(("Timeline (most recent last):", ACCENT_COLOR, 22))
+        if recent:
+            lines.extend((f"[Day {item.day} t{item.tick}] {item.summary}", TEXT_COLOR, 20) for item in recent)
+        else:
+            lines.append(("- No memories yet", MUTED_COLOR, 20))
+        return lines
+
+    def _relationship_lines(self, name: str) -> list[tuple]:
+        lines = [(f"{name} - relationships (T for other tabs)", ACCENT_COLOR, 26)]
+        graph = self.engine.relationships.graph
+        for other, relation in sorted(graph.get(name, {}).items()):
+            status = "ALLIED" if relation.allied else ("warm" if relation.trust >= 0.45 else "friendly" if relation.trust >= 0.1 else "hostile" if relation.trust <= -0.45 else "cold" if relation.trust <= -0.1 else "neutral")
+            lines.append((f"{other}: {status} (trust {relation.trust:+.2f})", TEXT_COLOR, 20))
+            favor_text = []
+            if relation.favor >= 0.25:
+                favor_text.append(f"you owe them {relation.favor:.1f} favor")
+            inverse = graph.get(other, {}).get(name)
+            if inverse is not None and inverse.favor >= 0.25:
+                favor_text.append(f"they owe you {inverse.favor:.1f} favor")
+            details = f"trades={relation.trade_count}, gifts given={relation.gifts_given}"
+            if favor_text:
+                details += ", " + ", ".join(favor_text)
+            lines.append((f"  {details}", MUTED_COLOR, 18))
+            if relation.notes:
+                lines.append((f"  last: {relation.notes[-1]}", MUTED_COLOR, 18))
         return lines
 
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> list[str]:

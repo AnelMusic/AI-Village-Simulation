@@ -196,21 +196,23 @@ What they do:
 In the Pygame viewer:
 
 - Click a villager to inspect them (click empty map to deselect)
-- Use the mouse wheel over the inspector to scroll
-- Press SPACE to pause or resume the simulation
-- Press ESC to quit
-- Resize the window freely
+- Mouse wheel over the inspector scrolls it; over the map it zooms the camera
+- Drag with the right mouse button (or arrow keys) to pan; the camera clamps to the map
+- Press SPACE to pause or resume, and 1 / 2 / 3 for 1x / 3x / 8x speed
+- Press T to cycle inspector tabs: villager / memories / relationships
+- Press R to toggle the relationship-graph overlay (trust-colored edges, gold for alliances)
+- Press H to toggle the activity heatmap of where villagers spend their time
+- Press ESC to quit; resize the window freely
 
 The inspector shows:
 
-- current action
-- energy
-- inventory
-- latest thought
-- recent memories
-- relationship summaries
-- village state
-- project progress
+- current action, energy, hunger/warmth/loneliness, active plan
+- inventory and latest thought
+- a memory timeline tab and a relationships tab (trust, favors, trade counts)
+- village state and season
+- project progress bars with contributor credit
+
+The map shows speech bubbles, plan labels, energy bars, day/night tint, project sites, and a live event feed of recent public events.
 
 ## Configuration
 
@@ -389,7 +391,6 @@ The project works, but it is still rough in important ways.
 - Engine reroutes still exist as guardrails; they are logged as `engine_override` events, but a deeper fix is better model grounding.
 - Trade frequency is better with price hints and counter-offers, but a true negotiated economy (granary shares, storage ownership) is still open.
 - Live API runs can still hit rate limits at high tick rates; the circuit breaker degrades gracefully to heuristic behavior during outages.
-- The viewer is functional but minimal; the P3 roadmap calls for pan/zoom, memory timelines, and a relationship-graph overlay.
 
 ## What Needs Improvement Next
 
@@ -398,7 +399,6 @@ The best next steps would be:
 - granary storage with communal shares and the hoarding dilemma
 - deeper dialogue memory so conversations reference earlier promises
 - richer festival/trader event interactions (event-specific actions)
-- viewer upgrade: pan/zoom camera, relationship-graph overlay, activity heatmap
 - longer-horizon planning (plans that span a full day or season)
 
 ## Why The Logs Matter

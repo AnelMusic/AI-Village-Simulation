@@ -153,6 +153,7 @@ class SimulationEngine:
 
     def tick(self) -> None:
         self.world.tick_count += 1
+        self._record_activity()
         self._advance_time()
         self._maybe_start_world_event()
         self._expire_world_event()
@@ -261,6 +262,16 @@ class SimulationEngine:
 
     SEASON_ORDER = ("spring", "summer", "autumn", "winter")
     SEASON_LENGTH_DAYS = 4
+
+    def _record_activity(self) -> None:
+        """Track per-tile presence for the activity heatmap."""
+        heatmap = self.world.activity_heatmap
+        if not heatmap:
+            return
+        for agent in self.world.agents.values():
+            x, y = agent.position
+            if 0 <= y < len(heatmap) and 0 <= x < len(heatmap[y]):
+                heatmap[y][x] += 1
 
     def _advance_time(self) -> None:
         day_progress = self.config.tick_interval_seconds / self.config.day_length_seconds
