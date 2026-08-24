@@ -63,6 +63,8 @@ class AgentState:
     hunger: float = 0.0
     warmth: float = 1.0
     social_need: float = 0.0
+    plan: "AgentPlan | None" = None
+    interrupt_flag: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +94,7 @@ class AgentState:
             "hunger": self.hunger,
             "warmth": self.warmth,
             "social_need": self.social_need,
+            "plan": self.plan.to_dict() if self.plan is not None else None,
         }
 
     @classmethod
@@ -124,7 +127,40 @@ class AgentState:
             hunger=float(data.get("hunger", 0.0)),
             warmth=float(data.get("warmth", 1.0)),
             social_need=float(data.get("social_need", 0.0)),
+            plan=AgentPlan.from_dict(data["plan"]) if data.get("plan") else None,
         )
+
+
+@dataclass
+class AgentPlan:
+    goal: str
+    steps: list[dict[str, Any]]
+    current_step: int = 0
+    created_tick: int = 0
+    thought: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal": self.goal,
+            "steps": [dict(step) for step in self.steps],
+            "current_step": self.current_step,
+            "created_tick": self.created_tick,
+            "thought": self.thought,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentPlan":
+        return cls(
+            goal=str(data.get("goal", "")),
+            steps=[dict(step) for step in data.get("steps", [])],
+            current_step=int(data.get("current_step", 0)),
+            created_tick=int(data.get("created_tick", 0)),
+            thought=str(data.get("thought", "")),
+        )
+
+    def describe(self) -> str:
+        total = len(self.steps)
+        return f"{self.goal} (step {min(self.current_step + 1, total)}/{total})"
 
 
 @dataclass

@@ -384,6 +384,8 @@ class PygameRenderer:
             self.selected_agent = None
             return []
         lines = [(f"{name} (click map to deselect)", ACCENT_COLOR, 26)]
+        if agent.plan is not None:
+            lines.append((f"Plan: {agent.plan.describe()}", (180, 200, 240), 20))
         lines.append((f"Action: {agent.current_action}", TEXT_COLOR, 20))
         lines.append((f"Position: {agent.position}   House: {agent.house_position}", TEXT_COLOR, 20))
         lines.append((f"Energy: {agent.energy:.2f}{'  (sleeping)' if agent.is_sleeping else ''}", TEXT_COLOR, 20))

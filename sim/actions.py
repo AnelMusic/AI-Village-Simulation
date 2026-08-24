@@ -192,6 +192,7 @@ class ActionResolver:
         for listener in heard_by:
             listener.last_social_tick = self.world.tick_count
             listener.social_need = max(0.0, listener.social_need - 0.5)
+            listener.interrupt_flag = True
             self.relationships.record(agent.name, listener.name, self.world.day, 0.05, f'Spoke: "{message}"')
             self._remember(listener.name, f'{agent.name} said "{message}" nearby.', 2, ["heard"])
         return ActionResult(True, f'You said "{message}".', event)
@@ -230,6 +231,7 @@ class ActionResolver:
         agent.last_social_tick = self.world.tick_count
         agent.social_need = 0.0
         target.social_need = 0.0
+        target.interrupt_flag = True
         summary = f"{agent.name} brought {target_name} a gift of {quantity} {item}."
         if visit_bonus:
             summary = f"{agent.name} visited {target_name}'s home and brought a gift of {quantity} {item}."
@@ -269,6 +271,7 @@ class ActionResolver:
         target.last_social_tick = self.world.tick_count
         agent.social_need = 0.0
         target.social_need = 0.0
+        target.interrupt_flag = True
         event = self._record_event(
             kind="alliance_offer",
             actor=agent.name,
@@ -650,6 +653,7 @@ class ActionResolver:
         target.last_social_tick = self.world.tick_count
         agent.social_need = 0.0
         target.social_need = 0.0
+        target.interrupt_flag = True
         if self._market_trade_bonus_active(agent.position):
             self._boost_village_morale(0.15)
         event = self._record_event(

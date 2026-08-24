@@ -72,6 +72,10 @@ def build_system_prompt(agent: AgentState, personality: str) -> str:
         "At your own house you can light a wood fire so nighttime recovery there becomes better for a while.\n"
         "The notice board reflects what the village seems to need most right now.\n"
         "Sleep is only for your own house. Rest is a lighter recovery action that works anywhere.\n"
+        "When a task needs several steps, like traveling somewhere and then acting there, call submit_plan with a goal and 2-5 steps. "
+        "The village then carries out your steps over the coming ticks without asking you again. "
+        "You will be consulted once more when the plan completes, when a step fails, or when something important happens: "
+        "someone speaks to you, a trade or alliance offer arrives, market hour starts, or your energy crashes.\n"
         "Invalid actions will fail and waste your turn."
     )
 
@@ -758,9 +762,16 @@ class HeuristicDecisionPolicy:
             )
         if "isolated for a while" in observation_lower:
             return Decision(
-                "move",
-                {"target": "village_plaza", "thought": "I should go where people gather."},
-                "I should go where people gather.",
+                "submit_plan",
+                {
+                    "goal": "Go to the plaza and reconnect with people",
+                    "steps": [
+                        {"tool": "move", "arguments": {"target": "village_plaza", "thought": "I should go where people gather."}},
+                        {"tool": "speak", "arguments": {"message": "I have been on my own too long. What is happening?", "target": "everyone", "thought": "Company first."}},
+                    ],
+                    "thought": "I have been isolated; I will plan a trip to the plaza and talk to whoever is there.",
+                },
+                "I have been isolated; I will plan a trip to the plaza and talk to whoever is there.",
             )
         ripe_tile = self._find_adjacent_tile(position, farm_tiles, "ripe")
         if ripe_tile:
@@ -822,9 +833,16 @@ class HeuristicDecisionPolicy:
         if village_stats.get("food", 7.0) <= 4.5:
             if inventory.get("wheat", 0) >= 1 and inventory.get("wood", 0) >= 1:
                 return Decision(
-                    "move",
-                    {"target": "community_hearth", "thought": "Cooking is one of the fastest ways to stabilize the village's food situation."},
-                    "Cooking is one of the fastest ways to stabilize the village's food situation.",
+                    "submit_plan",
+                    {
+                        "goal": "Cook supplies at the hearth to stabilize village food",
+                        "steps": [
+                            {"tool": "move", "arguments": {"target": "community_hearth", "thought": "Head to the hearth."}},
+                            {"tool": "cook_meal", "arguments": {"ingredient": "wheat", "quantity": 1, "thought": "Cooking is the fastest way to stabilize food."}},
+                        ],
+                        "thought": "Cooking is one of the fastest ways to stabilize the village's food situation, so I will plan the trip and the meal together.",
+                    },
+                    "Cooking is one of the fastest ways to stabilize the village's food situation, so I will plan the trip and the meal together.",
                 )
             if pond_tiles:
                 return Decision(

@@ -24,13 +24,33 @@ from .config import AppConfig, CharacterConfig
 from .memory import MemoryStore
 from .relationships import RelationshipGraph
 from .tools import TOOLS
-from .world import AgentState, WorldState, generate_world
+from .world import AgentPlan, AgentState, WorldState, generate_world
 
 
 @dataclass
 class PendingDecision:
     agent_name: str
     future: Future[Decision]
+
+
+PLAN_TOOL_NAMES = {
+    "move",
+    "speak",
+    "give_gift",
+    "propose_alliance",
+    "farm",
+    "light_fire",
+    "chop_wood",
+    "forage",
+    "fish",
+    "gather_flowers",
+    "cook_meal",
+    "sleep",
+    "rest",
+    "offer_trade",
+    "contribute_project",
+    "wait",
+}
 
 
 def json_dumps_compact(payload: dict) -> str:
@@ -333,6 +353,8 @@ class SimulationEngine:
                 if self.world.public_projects.get("market_stalls") and self.world.public_projects["market_stalls"].completed:
                     duration += max(2, int(round(3 * self.config.ticks_per_second)))
                 self.world.market_active_until_tick = self.world.tick_count + duration
+                for villager in self.world.agents.values():
+                    villager.interrupt_flag = True
                 summary = "Market hour has started at the village plaza. Trade and conversation there feel unusually productive."
                 if self.world.public_projects.get("market_stalls") and self.world.public_projects["market_stalls"].completed:
                     summary = "Market hour has started at the improved plaza stalls. Trade, gossip, and regrouping there feel unusually productive."
@@ -372,9 +394,110 @@ class SimulationEngine:
                 continue
             if agent.is_sleeping or agent.current_path:
                 continue
+            if agent.plan is not None:
+                plan = agent.plan
+                if plan.current_step >= len(plan.steps) and not agent.current_path:
+                    self._complete_plan(agent)
+                    continue
+                if agent.interrupt_flag or agent.energy <= 0.12:
+                    self._abort_plan(agent, "interrupted")
+                elif self.world.tick_count >= agent.next_think_tick:
+                    self._execute_plan_step(agent)
+                    continue
+                else:
+                    continue
             if self.world.tick_count < agent.next_think_tick:
                 continue
             self._submit_decision(agent)
+
+    def _install_plan(self, agent: AgentState, decision: Decision) -> None:
+        goal = str(decision.arguments.get("goal", "")).strip()[:120]
+        raw_steps = decision.arguments.get("steps") or []
+        steps: list[dict] = []
+        for raw in raw_steps[:5]:
+            if not isinstance(raw, dict):
+                continue
+            tool_name = str(raw.get("tool", "")).strip()
+            arguments = raw.get("arguments")
+            if tool_name not in PLAN_TOOL_NAMES or not isinstance(arguments, dict):
+                continue
+            steps.append({"tool": tool_name, "arguments": dict(arguments)})
+        if not goal or not steps:
+            agent.pending_result = "Plan rejected: a plan needs a goal and at least one valid step."
+            agent.next_think_tick = self.world.tick_count
+            return
+        agent.plan = AgentPlan(
+            goal=goal,
+            steps=steps,
+            created_tick=self.world.tick_count,
+            thought=str(decision.thought),
+        )
+        agent.next_think_tick = self.world.tick_count + 1
+        agent.pending_result = f"Plan accepted: {goal} ({len(steps)} steps)."
+        event = self.action_resolver._record_event(
+            kind="plan_start",
+            actor=agent.name,
+            summary=f"{agent.name} committed to a plan: {goal}.",
+            location=agent.position,
+            public=True,
+            metadata={"goal": goal, "steps": [step["tool"] for step in steps]},
+        )
+        self._append_event_row(event, str(decision.thought))
+
+    def _execute_plan_step(self, agent: AgentState) -> None:
+        plan = agent.plan
+        if plan is None:
+            return
+        step = plan.steps[plan.current_step]
+        tool_name = str(step.get("tool", "wait"))
+        arguments = dict(step.get("arguments", {}))
+        step_thought = str(arguments.get("thought", "")) or f"Working on my plan: {plan.goal}."
+        decision = Decision(tool_name=tool_name, arguments=arguments, thought=step_thought)
+        self._apply_decision(agent, decision)
+        plan.current_step += 1
+        if (agent.pending_result or "").startswith("Action failed"):
+            self._abort_plan(agent, "step_failed", detail=agent.pending_result)
+            return
+        if plan.current_step >= len(plan.steps) and not agent.current_path:
+            self._complete_plan(agent)
+
+    def _complete_plan(self, agent: AgentState) -> None:
+        plan = agent.plan
+        if plan is None:
+            return
+        agent.plan = None
+        agent.interrupt_flag = False
+        agent.next_think_tick = self.world.tick_count
+        event = self.action_resolver._record_event(
+            kind="plan_complete",
+            actor=agent.name,
+            summary=f"{agent.name} finished the plan: {plan.goal}.",
+            location=agent.position,
+            public=False,
+            metadata={"goal": plan.goal},
+        )
+        self._append_event_row(event, plan.thought)
+
+    def _abort_plan(self, agent: AgentState, reason: str, detail: str | None = None) -> None:
+        plan = agent.plan
+        if plan is None:
+            return
+        agent.plan = None
+        agent.interrupt_flag = False
+        agent.next_think_tick = self.world.tick_count
+        summaries = {
+            "interrupted": f"{agent.name}'s plan was interrupted: {plan.goal}.",
+            "step_failed": f"{agent.name}'s plan hit a failed step: {plan.goal}.",
+        }
+        event = self.action_resolver._record_event(
+            kind="plan_abort",
+            actor=agent.name,
+            summary=summaries.get(reason, f"{agent.name}'s plan ended: {plan.goal}."),
+            location=agent.position,
+            public=False,
+            metadata={"goal": plan.goal, "reason": reason, "detail": detail},
+        )
+        self._append_event_row(event, plan.thought)
 
     def _submit_decision(self, agent: AgentState) -> None:
         observation = build_observation(self.config, self.world, agent, self.memory_store, self.relationships)
@@ -715,6 +838,15 @@ class SimulationEngine:
             print(f"[{agent.name}] reroute: {stage} {original.tool_name} -> {overridden.tool_name}")
 
     def _apply_decision(self, agent: AgentState, decision: Decision) -> None:
+        if decision.tool_name == "submit_plan":
+            self.cost_tracker.record(decision.usage)
+            agent.last_thought = str(decision.arguments.get("thought", decision.thought))
+            agent.last_tool = "submit_plan"
+            if self.config.log_thoughts:
+                print(f"[{agent.name}] submit_plan: {decision.arguments.get('goal', '')}")
+            self._install_plan(agent, decision)
+            return
+
         previous_tool = agent.last_tool
         thought = decision.arguments.get("thought", decision.thought)
         agent.last_thought = str(thought)

@@ -343,4 +343,39 @@ TOOLS: list[dict] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "submit_plan",
+        "description": (
+            "Commit to a short multi-step plan (2-5 steps). The village executes the steps over the "
+            "coming ticks without consulting you again. You are re-asked when the plan completes, "
+            "a step fails, or something important happens (someone speaks to you, a trade or alliance "
+            "arrives, market hour starts, your energy crashes). Prefer submit_plan for any task that "
+            "needs traveling plus acting, like gathering wood and then contributing to the wood shed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "One short sentence describing what the plan achieves."},
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string", "description": "One of: move, speak, give_gift, propose_alliance, farm, light_fire, chop_wood, forage, fish, gather_flowers, cook_meal, sleep, rest, offer_trade, contribute_project, wait"},
+                            "arguments": {"type": "object", "description": "The tool arguments, same shape as calling the tool directly."},
+                        },
+                        "required": ["tool", "arguments"],
+                        "additionalProperties": False,
+                    },
+                },
+                "thought": {"type": "string"},
+            },
+            "required": ["goal", "steps", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
