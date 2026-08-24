@@ -388,6 +388,125 @@ class OpenAIDecisionPolicy:
 class HeuristicDecisionPolicy:
     """Deterministic fallback for offline use and tests."""
 
+    @staticmethod
+    def _extract_trade_id(text: str) -> str | None:
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("- Offer "):
+                return line.split(":", 1)[0].replace("- Offer ", "").strip()
+        return None
+
+    @staticmethod
+    def _extract_tile_after(prefix: str, text: str, only_stage: str | None = None) -> str | None:
+        for line in text.splitlines():
+            if prefix in line:
+                if only_stage and f"stage={only_stage}" not in line:
+                    continue
+                start = line.index(prefix) + len(prefix)
+                end = line.index(")", start)
+                return line[start:end].replace(" ", "")
+        return None
+
+    @staticmethod
+    def _extract_position(text: str) -> tuple[int, int]:
+        match = re.search(r"You are at \((\d+), (\d+)\)", text)
+        if not match:
+            return (0, 0)
+        return int(match.group(1)), int(match.group(2))
+
+    @staticmethod
+    def _extract_house(text: str) -> tuple[int, int]:
+        match = re.search(r"House: \((\d+), (\d+)\)", text)
+        if not match:
+            return (0, 0)
+        return int(match.group(1)), int(match.group(2))
+
+    @staticmethod
+    def _extract_inventory(text: str) -> dict[str, int]:
+        match = re.search(r"Inventory: (\{.+\})", text)
+        if not match:
+            return {}
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return {}
+
+    @staticmethod
+    def _extract_visible_agents(text: str) -> list[str]:
+        agents: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("- ") and " action=" in line:
+                agents.append(line[2:].split(" at ", 1)[0].strip())
+        return agents
+
+    @staticmethod
+    def _extract_tiles(text: str, prefix: str) -> list[tuple[tuple[int, int], str]]:
+        items: list[tuple[tuple[int, int], str]] = []
+        for line in text.splitlines():
+            if prefix not in line:
+                continue
+            start = line.index(prefix) + len(prefix)
+            end = line.index(")", start)
+            coords = line[start:end].replace(" ", "")
+            if "," not in coords:
+                continue
+            left, right = coords.split(",", 1)
+            stage = "unknown"
+            if "stage=" in line:
+                stage = line.split("stage=", 1)[1].strip()
+            items.append(((int(left), int(right)), stage))
+        return items
+
+    @staticmethod
+    def _find_adjacent_tile(
+        position: tuple[int, int], tiles: list[tuple[tuple[int, int], str]], required_stage: str | None = None
+    ) -> tuple[int, int] | None:
+        for coords, stage in tiles:
+            if required_stage and stage != required_stage:
+                continue
+            if abs(coords[0] - position[0]) + abs(coords[1] - position[1]) <= 1:
+                return coords
+        return None
+
+    @staticmethod
+    def _extract_village_stats(text: str) -> dict[str, float]:
+        match = re.search(r"Village food ([0-9.]+)/12, warmth ([0-9.]+)/12, morale ([0-9.]+)/12", text)
+        if not match:
+            return {}
+        return {
+            "food": float(match.group(1)),
+            "warmth": float(match.group(2)),
+            "morale": float(match.group(3)),
+        }
+
+    @staticmethod
+    def _is_market_active(text: str) -> bool:
+        return "market hour is active until tick" in text.lower()
+
+    @staticmethod
+    def _extract_project_opportunities(text: str) -> list[tuple[str, dict[str, int]]]:
+        opportunities: list[tuple[str, dict[str, int]]] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("- You can help the "):
+                continue
+            name_match = re.match(r"- You can help the (.+?) right now with (.+)\.", line)
+            if not name_match:
+                continue
+            title = name_match.group(1).strip().lower().replace(" ", "_")
+            contribution: dict[str, int] = {"wood": 0, "wheat": 0}
+            for part in name_match.group(2).split(","):
+                if ":" not in part:
+                    continue
+                item, amount = part.strip().split(":", 1)
+                try:
+                    contribution[item.strip()] = max(0, int(amount.strip()))
+                except ValueError:
+                    continue
+            opportunities.append((title, contribution))
+        return opportunities
+
     def decide(self, request: DecisionRequest) -> Decision:
         observation = request.observation
         observation_lower = observation.lower()
@@ -617,125 +736,6 @@ class HeuristicDecisionPolicy:
 
 def agent_energy_low(observation_lower: str) -> bool:
     return "energy is low" in observation_lower or "rest now" in observation_lower
-
-    @staticmethod
-    def _extract_trade_id(text: str) -> str | None:
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("- Offer "):
-                return line.split(":", 1)[0].replace("- Offer ", "").strip()
-        return None
-
-    @staticmethod
-    def _extract_tile_after(prefix: str, text: str, only_stage: str | None = None) -> str | None:
-        for line in text.splitlines():
-            if prefix in line:
-                if only_stage and f"stage={only_stage}" not in line:
-                    continue
-                start = line.index(prefix) + len(prefix)
-                end = line.index(")", start)
-                return line[start:end].replace(" ", "")
-        return None
-
-    @staticmethod
-    def _extract_position(text: str) -> tuple[int, int]:
-        match = re.search(r"You are at \((\d+), (\d+)\)", text)
-        if not match:
-            return (0, 0)
-        return int(match.group(1)), int(match.group(2))
-
-    @staticmethod
-    def _extract_house(text: str) -> tuple[int, int]:
-        match = re.search(r"House: \((\d+), (\d+)\)", text)
-        if not match:
-            return (0, 0)
-        return int(match.group(1)), int(match.group(2))
-
-    @staticmethod
-    def _extract_inventory(text: str) -> dict[str, int]:
-        match = re.search(r"Inventory: (\{.+\})", text)
-        if not match:
-            return {}
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return {}
-
-    @staticmethod
-    def _extract_visible_agents(text: str) -> list[str]:
-        agents: list[str] = []
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("- ") and " action=" in line:
-                agents.append(line[2:].split(" at ", 1)[0].strip())
-        return agents
-
-    @staticmethod
-    def _extract_tiles(text: str, prefix: str) -> list[tuple[tuple[int, int], str]]:
-        items: list[tuple[tuple[int, int], str]] = []
-        for line in text.splitlines():
-            if prefix not in line:
-                continue
-            start = line.index(prefix) + len(prefix)
-            end = line.index(")", start)
-            coords = line[start:end].replace(" ", "")
-            if "," not in coords:
-                continue
-            left, right = coords.split(",", 1)
-            stage = "unknown"
-            if "stage=" in line:
-                stage = line.split("stage=", 1)[1].strip()
-            items.append(((int(left), int(right)), stage))
-        return items
-
-    @staticmethod
-    def _find_adjacent_tile(
-        position: tuple[int, int], tiles: list[tuple[tuple[int, int], str]], required_stage: str | None = None
-    ) -> tuple[int, int] | None:
-        for coords, stage in tiles:
-            if required_stage and stage != required_stage:
-                continue
-            if abs(coords[0] - position[0]) + abs(coords[1] - position[1]) <= 1:
-                return coords
-        return None
-
-    @staticmethod
-    def _extract_village_stats(text: str) -> dict[str, float]:
-        match = re.search(r"Village food ([0-9.]+)/12, warmth ([0-9.]+)/12, morale ([0-9.]+)/12", text)
-        if not match:
-            return {}
-        return {
-            "food": float(match.group(1)),
-            "warmth": float(match.group(2)),
-            "morale": float(match.group(3)),
-        }
-
-    @staticmethod
-    def _is_market_active(text: str) -> bool:
-        return "market hour is active until tick" in text.lower()
-
-    @staticmethod
-    def _extract_project_opportunities(text: str) -> list[tuple[str, dict[str, int]]]:
-        opportunities: list[tuple[str, dict[str, int]]] = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line.startswith("- You can help the "):
-                continue
-            name_match = re.match(r"- You can help the (.+?) right now with (.+)\.", line)
-            if not name_match:
-                continue
-            title = name_match.group(1).strip().lower().replace(" ", "_")
-            contribution: dict[str, int] = {"wood": 0, "wheat": 0}
-            for part in name_match.group(2).split(","):
-                if ":" not in part:
-                    continue
-                item, amount = part.strip().split(":", 1)
-                try:
-                    contribution[item.strip()] = max(0, int(amount.strip()))
-                except ValueError:
-                    continue
-            opportunities.append((title, contribution))
-        return opportunities
 
 
 class CostTracker:

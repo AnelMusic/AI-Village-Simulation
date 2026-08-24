@@ -443,8 +443,6 @@ def generate_world(config: AppConfig) -> WorldState:
                 tile.crop_stage = "empty"
                 tile.crop_progress = 0.0
 
-    inventory_items = ("wood", "wheat", "berries", "fish", "flowers", "meal")
-
     agents: dict[str, AgentState] = {}
     for character in config.characters:
         hx, hy = character.house_position
@@ -452,9 +450,7 @@ def generate_world(config: AppConfig) -> WorldState:
         grid[hy][hx].house_owner = character.name
         grid[hy][hx].passable = True
         set_road_line(character.house_position, center)
-        starting_inventory = {item: 10 for item in inventory_items}
-        for item, quantity in character.starting_inventory.items():
-            starting_inventory[item] = starting_inventory.get(item, 10) + quantity
+        starting_inventory = dict(character.starting_inventory)
         agents[character.name] = AgentState(
             name=character.name,
             position=character.house_position,

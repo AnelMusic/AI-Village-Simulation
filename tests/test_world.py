@@ -39,9 +39,9 @@ def test_world_generation_and_roundtrip(app_config, tmp_path: Path) -> None:
     assert any(tile.feature == "bathhouse_site" for row in world.grid for tile in row)
     assert any(tile.feature == "greenhouse_site" for row in world.grid for tile in row)
     assert any(tile.feature == "dock" for row in world.grid for tile in row)
-    for agent in world.agents.values():
-        for item in ("wood", "wheat", "berries", "fish", "flowers", "meal"):
-            assert agent.inventory.get(item, 0) >= 10
+    for character in app_config.characters:
+        agent = world.agents[character.name]
+        assert agent.inventory == dict(character.starting_inventory)
 
     forest_tiles = [
         (x, y)

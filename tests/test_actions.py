@@ -181,7 +181,7 @@ def test_action_resolver_validates_and_applies_actions(app_config) -> None:
         },
     )
     assert gift.success
-    assert fen.inventory["flowers"] >= 12
+    assert fen.inventory["flowers"] == 2
     assert relationships.get("Fen", "Mira").favor > 0
 
     alliance_offer = resolver.apply(

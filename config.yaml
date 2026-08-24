@@ -1,4 +1,6 @@
-openai_key: sk-proj-
+# OpenAI API key: set via the OPENAI_API_KEY environment variable, or here.
+# Leave null to run with the deterministic heuristic fallback policy.
+openai_key: null
 model: "gpt-5.4-nano"
 max_tokens_per_turn: 350
 ticks_per_second: 0.5
