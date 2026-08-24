@@ -84,18 +84,45 @@ def build_system_prompt(agent: AgentState, personality: str) -> str:
 
 def build_board_notice(world: WorldState) -> str:
     if world.village_food <= 4.5:
-        return "Board notice: Food stores are thinning. Prioritize cooking, harvesting, fishing, foraging, and granary work."
-    if world.village_warmth <= 4.5:
-        return "Board notice: Warmth is slipping. Bring wood, finish the wood shed, and keep the village comfortable."
-    if world.village_morale <= 4.8:
-        return "Board notice: Spirits are low. Flowers, shared meals, and time in the village center would help."
-    if not world.public_projects.get("bathhouse", None) or not world.public_projects["bathhouse"].completed:
-        return "Board notice: The bathhouse would make the center more livable. Materials are still needed."
-    if not world.public_projects.get("greenhouse", None) or not world.public_projects["greenhouse"].completed:
-        return "Board notice: The greenhouse would keep the village productive and beautiful through lean stretches."
-    if world.is_market_active():
-        return "Board notice: Market hour is active. The plaza is the best place for trade, gossip, and coordination."
-    return "Board notice: The village is stable for now. Shared meals, conversations, and steady project work keep it that way."
+        base = "Board notice: Food stores are thinning. Prioritize cooking, harvesting, fishing, foraging, and granary work."
+    elif world.village_warmth <= 4.5:
+        base = "Board notice: Warmth is slipping. Bring wood, finish the wood shed, and keep the village comfortable."
+    elif world.village_morale <= 4.8:
+        base = "Board notice: Spirits are low. Flowers, shared meals, and time in the village center would help."
+    elif not world.public_projects.get("bathhouse", None) or not world.public_projects["bathhouse"].completed:
+        base = "Board notice: The bathhouse would make the center more livable. Materials are still needed."
+    elif not world.public_projects.get("greenhouse", None) or not world.public_projects["greenhouse"].completed:
+        base = "Board notice: The greenhouse would keep the village productive and beautiful through lean stretches."
+    elif world.is_market_active():
+        base = "Board notice: Market hour is active. The plaza is the best place for trade, gossip, and coordination."
+    else:
+        base = "Board notice: The village is stable for now. Shared meals, conversations, and steady project work keep it that way."
+    hint = _project_role_hint(world)
+    return f"{base}{hint}" if hint else base
+
+
+def _project_role_hint(world: WorldState) -> str:
+    priority_names = ("wood_shed", "granary", "market_stalls", "bathhouse", "greenhouse")
+    project = next(
+        (world.public_projects.get(name) for name in priority_names
+         if world.public_projects.get(name) and not world.public_projects[name].completed),
+        None,
+    )
+    if project is None:
+        return ""
+    remaining = {item: amount for item, amount in project.remaining().items() if amount > 0}
+    if not remaining:
+        return ""
+    role_parts = []
+    for item, amount in remaining.items():
+        holders = sorted(
+            agent.name for agent in world.agents.values() if agent.inventory.get(item, 0) > 0
+        )[:2]
+        if holders:
+            role_parts.append(f"{' and '.join(holders)} could bring {item}")
+        else:
+            role_parts.append(f"someone should gather {item} first")
+    return f" {project.title} still needs {', '.join(f'{item}:{amount}' for item, amount in remaining.items())} - {'; '.join(role_parts)}."
 
 
 def build_observation(
@@ -237,12 +264,17 @@ def build_observation(
         f"- {name} at {position}"
         for name, position in sorted(world.landmarks.items())
     ]
-    project_lines = [
-        f"- {project.title} at {project.site}: {project.description} Remaining {project.remaining()}"
-        if not project.completed
-        else f"- {project.title} at {project.site}: completed. Bonus active: {project.bonus_description}"
-        for project in world.public_projects.values()
-    ]
+    project_lines = []
+    for project in world.public_projects.values():
+        if project.completed:
+            project_lines.append(
+                f"- {project.title} at {project.site}: completed. Built by {project.contributor_summary()}. Bonus active: {project.bonus_description}"
+            )
+        else:
+            line = f"- {project.title} at {project.site}: {project.description} Remaining {project.remaining()}"
+            if project.contributors:
+                line += f". Contributions so far: {project.contributor_summary()}"
+            project_lines.append(line)
     social_gap = world.tick_count - agent.last_social_tick
     adjacent_agents = [
         other.name

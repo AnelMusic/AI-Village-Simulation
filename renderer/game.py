@@ -373,10 +373,12 @@ class PygameRenderer:
         lines = [("Public projects", ACCENT_COLOR, 24)]
         for project in self.engine.world.public_projects.values():
             if project.completed:
-                lines.append((f"{project.title}: completed", (140, 220, 140), 20))
+                lines.append((f"{project.title}: completed. Built by {project.contributor_summary()}", (140, 220, 140), 20))
             else:
                 remaining = ", ".join(f"{item}:{amount}" for item, amount in project.remaining().items() if amount > 0)
                 lines.append((f"{project.title}: needs {remaining}", TEXT_COLOR, 20))
+                if project.contributors:
+                    lines.append((f"  by {project.contributor_summary()}", MUTED_COLOR, 18))
         return lines
 
     def _agent_lines(self, name: str) -> list[tuple[str, tuple[int, int, int], int]]:

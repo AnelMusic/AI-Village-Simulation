@@ -307,6 +307,7 @@ class ProjectState:
     description: str
     bonus_description: str
     completed: bool = False
+    contributors: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -324,7 +325,27 @@ class ProjectState:
             description=data["description"],
             bonus_description=data["bonus_description"],
             completed=bool(data.get("completed", False)),
+            contributors={
+                name: dict(items) for name, items in data.get("contributors", {}).items()
+            },
         )
+
+    def record_contribution(self, agent_name: str, contribution: dict[str, int]) -> None:
+        bucket = self.contributors.setdefault(agent_name, {})
+        for item, amount in contribution.items():
+            bucket[item] = bucket.get(item, 0) + amount
+
+    def total_contribution(self, agent_name: str) -> int:
+        return sum(self.contributors.get(agent_name, {}).values())
+
+    def contributor_summary(self) -> str:
+        if not self.contributors:
+            return "no contributions yet"
+        parts = []
+        for name, items in sorted(self.contributors.items(), key=lambda pair: -sum(pair[1].values())):
+            item_text = ", ".join(f"{item}:{amount}" for item, amount in sorted(items.items()) if amount > 0)
+            parts.append(f"{name} ({item_text})")
+        return "; ".join(parts)
 
     def remaining(self) -> dict[str, int]:
         return {item: max(0, self.required.get(item, 0) - self.progress.get(item, 0)) for item in self.required}

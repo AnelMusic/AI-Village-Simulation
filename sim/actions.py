@@ -1076,6 +1076,7 @@ class ActionResolver:
         for item, quantity in allowed.items():
             agent.inventory[item] -= quantity
             project.progress[item] = project.progress.get(item, 0) + quantity
+        project.record_contribution(agent.name, allowed)
         agent.current_action = "building"
         agent.last_social_tick = self.world.tick_count
         helpers = self._nearby_helpers(agent)
@@ -1092,6 +1093,26 @@ class ActionResolver:
         completed_now = all(project.progress.get(item, 0) >= required for item, required in project.required.items())
         if completed_now:
             project.completed = True
+            # Credit attribution: substantial contributors earn village-wide reputation.
+            for contributor_name, items in project.contributors.items():
+                if sum(items.values()) < 3:
+                    continue
+                for other_name in self.world.agents:
+                    if other_name == contributor_name:
+                        continue
+                    self.relationships.record(
+                        contributor_name,
+                        other_name,
+                        self.world.day,
+                        0.05,
+                        f"built the {project.title} together",
+                    )
+                self._remember(
+                    contributor_name,
+                    f"The village finished the {project.title}, and my contributions ({items}) were noticed.",
+                    5,
+                    ["project", "reputation"],
+                )
             if project.name == "granary":
                 self._boost_village_food(2.0)
             elif project.name == "wood_shed":
