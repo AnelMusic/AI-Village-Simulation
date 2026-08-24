@@ -356,6 +356,7 @@ class WorldState:
     conversations: dict[str, Conversation] = field(default_factory=dict)
     pending_asks: dict[str, HelpAsk] = field(default_factory=dict)
     recent_events: list[WorldEvent] = field(default_factory=list)
+    active_event: dict[str, Any] | None = None
 
     def tile_at(self, position: tuple[int, int]) -> Tile:
         x, y = position
@@ -402,6 +403,7 @@ class WorldState:
             "conversations": {cid: conversation.to_dict() for cid, conversation in self.conversations.items()},
             "pending_asks": {ask_id: ask.to_dict() for ask_id, ask in self.pending_asks.items()},
             "recent_events": [event.to_dict() for event in self.recent_events[-200:]],
+            "active_event": dict(self.active_event) if self.active_event else None,
         }
 
     @classmethod
@@ -444,6 +446,7 @@ class WorldState:
             conversations=conversations,
             pending_asks=pending_asks,
             recent_events=recent_events,
+            active_event=dict(data["active_event"]) if data.get("active_event") else None,
         )
 
     def save(self, path: str | Path) -> None:

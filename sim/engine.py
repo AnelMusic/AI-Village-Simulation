@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import csv
 import json
+import random
 import threading
 import time
 
@@ -83,6 +84,7 @@ class SimulationEngine:
         )
         self.executor = ThreadPoolExecutor(max_workers=config.max_concurrent_model_calls)
         self.pending_decisions: dict[str, PendingDecision] = {}
+        self.rng = random.Random()
         self.accumulator = 0.0
         self.last_autosave_monotonic = time.monotonic()
         self.last_tick_monotonic = time.monotonic()
@@ -152,6 +154,8 @@ class SimulationEngine:
     def tick(self) -> None:
         self.world.tick_count += 1
         self._advance_time()
+        self._maybe_start_world_event()
+        self._expire_world_event()
         self._update_village_pressures()
         self._update_sleep_and_energy()
         self._advance_movement()
@@ -162,6 +166,84 @@ class SimulationEngine:
         self._expire_asks()
         self._emit_shared_gathering_events()
         self._schedule_decisions()
+
+    WORLD_EVENT_TEMPLATES: dict[str, dict] = {
+        "storm": {
+            "duration": 30,
+            "start": "A storm is rolling through the valley. Wind tears at the treeline and everyone outside is getting cold.",
+            "end": "The storm has passed. The village drips but stands.",
+        },
+        "festival": {
+            "duration": 25,
+            "start": "A festival mood sweeps the village! The plaza is the place to be - company, food, and celebration.",
+            "end": "The festival winds down into a warm, tired evening.",
+        },
+        "shortage": {
+            "duration": 40,
+            "start": "A lean stretch begins. The groves and pond seem slower to give, and food stores feel thin.",
+            "end": "The lean stretch eases. Growth returns to the groves and the pond.",
+        },
+        "trader": {
+            "duration": 30,
+            "start": "A traveling trader has set up colorful stalls at the plaza with outside goods to exchange.",
+            "end": "The traveling trader packs up and moves on.",
+        },
+    }
+
+    def _maybe_start_world_event(self) -> None:
+        if self.world.active_event is not None:
+            return
+        if self.world.tick_count < 20 or self.world.tick_count % 40 != 0:
+            return
+        if self.rng.random() > 0.35:
+            return
+        kinds = list(self.WORLD_EVENT_TEMPLATES.keys())
+        weights = [0.3, 0.25, 0.25, 0.2]
+        kind = self.rng.choices(kinds, weights=weights, k=1)[0]
+        self._start_world_event(kind)
+
+    def _start_world_event(self, kind: str) -> None:
+        template = self.WORLD_EVENT_TEMPLATES.get(kind)
+        if template is None or self.world.active_event is not None:
+            return
+        self.world.active_event = {
+            "kind": kind,
+            "started_tick": self.world.tick_count,
+            "ends_tick": self.world.tick_count + template["duration"],
+            "message": template["start"],
+        }
+        for agent in self.world.agents.values():
+            agent.interrupt_flag = True
+        if kind == "festival":
+            self.world.village_morale = min(12.0, self.world.village_morale + 0.5)
+        event = self.action_resolver._record_event(
+            kind="world_event",
+            actor="system",
+            summary=template["start"],
+            location=self.world.landmarks.get("village_plaza"),
+            public=True,
+            metadata={"event": kind, "ends_tick": self.world.active_event["ends_tick"]},
+        )
+        self._append_event_row(event, "system")
+
+    def _expire_world_event(self) -> None:
+        active = self.world.active_event
+        if active is None or self.world.tick_count < active["ends_tick"]:
+            return
+        template = self.WORLD_EVENT_TEMPLATES[active["kind"]]
+        self.world.active_event = None
+        event = self.action_resolver._record_event(
+            kind="world_event",
+            actor="system",
+            summary=template["end"],
+            location=self.world.landmarks.get("village_plaza"),
+            public=True,
+            metadata={"event": active["kind"], "ended": True},
+        )
+        self._append_event_row(event, "system")
+
+    def _event_kind(self) -> str | None:
+        return self.world.active_event["kind"] if self.world.active_event else None
 
     def maybe_autosave(self) -> None:
         now = time.monotonic()
@@ -273,6 +355,14 @@ class SimulationEngine:
             warmth_change = -0.010 * warmth_focus
         else:
             warmth_change = 0.006
+        event_kind = self._event_kind()
+        if event_kind == "storm" and agent.position != agent.house_position and not agent.is_sleeping:
+            warmth_change -= 0.010
+        plaza = self.world.landmarks.get("village_plaza")
+        if event_kind == "festival" and plaza is not None:
+            if abs(agent.position[0] - plaza[0]) + abs(agent.position[1] - plaza[1]) <= 3:
+                agent.social_need = max(0.0, agent.social_need - 0.05)
+                agent.warmth = min(1.0, agent.warmth + 0.004)
         if self.world.village_warmth <= 4.0:
             warmth_change -= 0.004 * warmth_focus
         hearth = self.world.landmarks.get("community_hearth")
@@ -290,6 +380,17 @@ class SimulationEngine:
         food_drain = 0.035
         warmth_drain = 0.025
         morale_drift = 0.0
+        event_kind = self._event_kind()
+        if event_kind == "storm":
+            warmth_drain += 0.030
+            food_drain += 0.015
+            morale_drift -= 0.010
+        elif event_kind == "shortage":
+            food_drain += 0.025
+        elif event_kind == "festival":
+            morale_drift += 0.030
+        elif event_kind == "trader":
+            morale_drift += 0.010
         if self.world.public_projects.get("granary") and self.world.public_projects["granary"].completed:
             food_drain -= 0.012
         if self.world.public_projects.get("wood_shed") and self.world.public_projects["wood_shed"].completed:
@@ -337,6 +438,7 @@ class SimulationEngine:
 
     def _grow_crops_and_regenerate_forest(self) -> None:
         greenhouse_complete = self.world.public_projects.get("greenhouse") is not None and self.world.public_projects["greenhouse"].completed
+        regen_paused = self._event_kind() in {"shortage", "storm"}
         for row in self.world.grid:
             for tile in row:
                 if tile.kind == "farm" and tile.crop_stage == "growing":
@@ -344,6 +446,8 @@ class SimulationEngine:
                     if tile.crop_progress >= 1.0:
                         tile.crop_stage = "ripe"
                         tile.crop_progress = 1.0
+                if regen_paused:
+                    continue
                 if tile.kind == "forest" and tile.wood < 8 and self.world.tick_count % 16 == 0:
                     tile.wood += 1
                 if tile.kind == "berry_grove" and tile.berries < 5 and self.world.tick_count % 20 == 0:

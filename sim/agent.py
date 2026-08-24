@@ -385,6 +385,11 @@ def build_observation(
         if world.is_market_active()
         else "No market hour is active right now."
     )
+    event_text = (
+        f"Village event: {world.active_event['message']} (until tick {world.active_event['ends_tick']})."
+        if world.active_event
+        else "No unusual event is affecting the village."
+    )
 
     return (
         f"=== Observation: Day {world.day}, tick {world.tick_count} ===\n"
@@ -393,7 +398,7 @@ def build_observation(
         f"Inventory: {json.dumps(agent.inventory, sort_keys=True)}.\n"
         f"Current action: {agent.current_action}. Last result: {agent.pending_result or 'none'}.\n"
         f"House fire: {'lit' if agent.house_fire_ticks > 0 else 'out'}.\n\n"
-        f"Village state:\n- {village_status}\n- {market_text}\n- {board_notice}\n\n"
+        f"Village state:\n- {village_status}\n- {market_text}\n- {event_text}\n- {board_notice}\n\n"
         f"Urgent needs:\n{needs_text}\n\n"
         f"Agents you can trade or speak with right now: {adjacent_text}.\n\n"
         f"Known landmarks across the whole map:\n{landmark_text}\n\n"
@@ -743,6 +748,17 @@ class HeuristicDecisionPolicy:
         if "energy is low" in observation_lower and "nighttime" not in observation_lower:
             return Decision("rest", {"thought": "I should rest briefly before I overextend."}, "I should rest briefly before I overextend.")
         personal_needs = self._extract_needs(request.observation)
+        if "storm is rolling through" in observation_lower:
+            if position == self._extract_house(request.observation):
+                if inventory.get("wood", 0) >= 1 and "house fire is lit" not in observation_lower:
+                    return Decision("light_fire", {"thought": "A storm is here; a home fire will keep the night warm."}, "A storm is here; a home fire will keep the night warm.")
+                return Decision("rest", {"thought": "I will wait out the storm at home."}, "I will wait out the storm at home.")
+            return Decision("move", {"target": "my_house", "thought": "The storm is getting worse. I should get home."}, "The storm is getting worse. I should get home.")
+        if "festival mood sweeps the village" in observation_lower and position != self._extract_house(request.observation):
+            if "energy is low" not in observation_lower:
+                return Decision("move", {"target": "village_plaza", "thought": "A festival is on. The plaza is where everyone should be."}, "A festival is on. The plaza is where everyone should be.")
+        if "traveling trader" in observation_lower and "energy is low" not in observation_lower:
+            return Decision("move", {"target": "village_plaza", "thought": "A trader is at the plaza. I should not miss this."}, "A trader is at the plaza. I should not miss this.")
         if personal_needs.get("hunger", 0) >= 60:
             hungry_tile = self._find_adjacent_tile(position, berry_tiles) or self._find_adjacent_tile(position, pond_tiles)
             if hungry_tile and self._find_adjacent_tile(position, berry_tiles):

@@ -961,6 +961,9 @@ class ActionResolver:
         other.energy = min(1.0, other.energy + bonus)
         agent.comfort_ticks = min(agent.comfort_ticks + 8, 16)
         other.comfort_ticks = min(other.comfort_ticks + 8, 16)
+        if self.world.active_event and self.world.active_event.get("kind") == "trader":
+            self._boost_village_food(0.2)
+            self._boost_village_morale(0.05)
         event = self._record_event(
             kind="trade_accept",
             actor=agent.name,

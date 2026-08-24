@@ -294,6 +294,8 @@ class PygameRenderer:
         self.screen.blit(title, (14, 8))
 
         chips: list[str] = []
+        if world.active_event:
+            chips.append(world.active_event["kind"].upper())
         if world.is_market_active():
             chips.append("MARKET HOUR")
         if self.paused:
