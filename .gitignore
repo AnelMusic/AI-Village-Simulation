@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project runtime artifacts
+/data/
+/logs/
+.pytest_tmp/
+.claude/*.local.md
+_dbg_out.txt
+_patch_agent17.py

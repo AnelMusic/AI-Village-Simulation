@@ -78,6 +78,10 @@ def build_system_prompt(agent: AgentState, personality: str) -> str:
         "The village then carries out your steps over the coming ticks without asking you again. "
         "You will be consulted once more when the plan completes, when a step fails, or when something important happens: "
         "someone speaks to you, a trade or alliance offer arrives, market hour starts, or your energy crashes.\n"
+        "The completed granary is a shared store with personal shares. Use granary to deposit food you want to share (you earn a withdrawable share credit) or to withdraw only what you have earned. Hoarding everything privately is allowed, but a well-fed granary rations food during shortages and storms.\n"
+        "During festivals, move near the plaza and celebrate to lift morale, recover energy, and bond with neighbors. During the traveling trader visit, trade_with_trader at the plaza swaps your goods for outside goods at up to double rate.\n"
+        "Promises matter. Saying \"I will bring/give/trade...\" directly to someone creates a remembered promise; keeping it builds trust, and letting it lapse cools it. Reference earlier promises when they come due.\n"
+        "For longer horizons, submit_plan accepts horizon=\"day\" (up to 8 steps, roughly one day of work) or horizon=\"season\" (up to 10 steps spanning many days; the plan pauses at each season change so you can rethink it). Use these for full workdays or seasonal preparation like winter wood stockpiles.\n"
         "Invalid actions will fail and waste your turn."
     )
 
@@ -438,6 +442,46 @@ def build_observation(
         else "No unusual event is affecting the village."
     )
 
+    granary_lines: list[str] = []
+    granary_project = world.public_projects.get("granary")
+    if granary_project is not None and granary_project.completed:
+        store_total = sum(world.granary_store.values())
+        my_shares = world.granary_shares.get(agent.name, {})
+        share_total = sum(my_shares.values())
+        granary_lines.append(
+            f"- Granary store: {json.dumps(world.granary_store, sort_keys=True)} ({store_total} total)."
+        )
+        granary_lines.append(
+            f"- Your withdrawable shares: {json.dumps(my_shares, sort_keys=True)} ({share_total} total)."
+        )
+        if store_total <= 2:
+            granary_lines.append("- The granary is nearly empty. Deposits would protect the village in hard times.")
+        elif agent.inventory.get("wheat", 0) + agent.inventory.get("berries", 0) >= 4:
+            granary_lines.append("- You are carrying plenty of food; depositing some earns a share credit and feeds the village.")
+    else:
+        granary_lines.append("- The granary is not built yet.")
+    granary_text = "\n".join(granary_lines)
+
+    promise_lines: list[str] = []
+    for promise in reversed([p for p in world.promises if p.status == "pending"]):
+        if promise.to_agent == agent.name:
+            promise_lines.append(
+                f"- {promise.from_agent} promised you: \"{promise.description}\" (made day {promise.made_day}, due by day {promise.expires_day}). Hold them to it."
+            )
+        elif promise.from_agent == agent.name:
+            promise_lines.append(
+                f"- You promised {promise.to_agent}: \"{promise.description}\" (due by day {promise.expires_day}). Follow through or explain yourself."
+            )
+    promise_text = "\n".join(promise_lines[:5]) or "- No open promises."
+
+    event_action_hint = ""
+    if world.active_event is not None:
+        kind = world.active_event.get("kind")
+        if kind == "festival":
+            event_action_hint = "- Festival special: once near the plaza, use celebrate to join in."
+        elif kind == "trader":
+            event_action_hint = "- Trader special: at the plaza stalls, use trade_with_trader for premium swaps."
+
     return (
         f"=== Observation: Day {world.day}, tick {world.tick_count} (season: {world.season}) ===\n"
         f"You are at {agent.position}. House: {agent.house_position}. Energy: {agent.energy:.2f}.\n"
@@ -446,13 +490,15 @@ def build_observation(
         f"Current action: {agent.current_action}. Last result: {agent.pending_result or 'none'}.\n"
         f"House fire: {'lit' if agent.house_fire_ticks > 0 else 'out'}.\n\n"
         f"Village state:\n- {village_status}\n- {market_text}\n- {event_text}\n- {board_notice}\n\n"
+        f"Granary:\n{granary_text}\n\n"
+        f"Open promises:{'\n' + promise_text if promise_text != '- No open promises.' else ' ' + promise_text}\n\n"
         f"Urgent needs:\n{needs_text}\n\n"
         f"Agents you can trade or speak with right now: {adjacent_text}.\n\n"
         f"Known landmarks across the whole map:\n{landmark_text}\n\n"
         f"Public projects:\n{project_text}\n\n"
         f"Project opportunities from where you are:\n{project_prompt_text}\n\n"
         f"Village stockpiles (price hints for trading):\n{stock_text}\n\n"
-        f"Immediate valid actions from where you stand:\n{immediate_actions_text}\n\n"
+        f"Immediate valid actions from where you stand:\n{immediate_actions_text}{chr(10) + event_action_hint if event_action_hint else ''}\n\n"
         f"Nearby villagers:\n{visible_agents_text}\n\n"
         f"Nearby tiles:\n{nearby_tiles_text}\n\n"
         f"Pending trades:\n{trade_text}\n\n"
@@ -686,6 +732,19 @@ class HeuristicDecisionPolicy:
     def _is_market_active(text: str) -> bool:
         return "market hour is active until tick" in text.lower()
 
+    @classmethod
+    def _is_market_active_text(cls, text_lower: str) -> bool:
+        return cls._is_market_active(text_lower)
+
+    @staticmethod
+    def world_is_stable(stats: dict[str, float], inventory: dict[str, int]) -> bool:
+        """True when nothing urgent demands attention and variety is healthy."""
+        food = stats.get("food", 7.0)
+        warmth = stats.get("warmth", 6.0)
+        morale = stats.get("morale", 6.0)
+        well_stocked = inventory.get("wheat", 0) >= 2 and inventory.get("wood", 0) >= 2
+        return food > 4.5 and warmth > 4.5 and morale > 5.0 and well_stocked
+
     @staticmethod
     def _extract_project_opportunities(text: str) -> list[tuple[str, dict[str, int]]]:
         opportunities: list[tuple[str, dict[str, int]]] = []
@@ -758,6 +817,8 @@ class HeuristicDecisionPolicy:
         hearth_tiles = self._extract_tiles(observation, "Community hearth at (")
         project_options = self._extract_project_opportunities(observation)
         village_stats = self._extract_village_stats(observation)
+        repeated_match = re.search(r"repeated a very similar action (\d+) times", observation)
+        agent_repeated_tool_count = int(repeated_match.group(1)) if repeated_match else 0
 
         if "pending trade offers" in observation_lower and "offer " in observation_lower:
             trade_id = self._extract_trade_id(request.observation)
@@ -793,8 +854,6 @@ class HeuristicDecisionPolicy:
             )
         if "energy is low" in observation_lower and position == self._extract_house(request.observation):
             return Decision("sleep", {"thought": "I need to sleep."}, "I need to sleep.")
-        if "energy is low" in observation_lower and "nighttime" not in observation_lower:
-            return Decision("rest", {"thought": "I should rest briefly before I overextend."}, "I should rest briefly before I overextend.")
         personal_needs = self._extract_needs(request.observation)
         if "storm is rolling through" in observation_lower:
             if position == self._extract_house(request.observation):
@@ -802,10 +861,43 @@ class HeuristicDecisionPolicy:
                     return Decision("light_fire", {"thought": "A storm is here; a home fire will keep the night warm."}, "A storm is here; a home fire will keep the night warm.")
                 return Decision("rest", {"thought": "I will wait out the storm at home."}, "I will wait out the storm at home.")
             return Decision("move", {"target": "my_house", "thought": "The storm is getting worse. I should get home."}, "The storm is getting worse. I should get home.")
-        if "festival mood sweeps the village" in observation_lower and position != self._extract_house(request.observation):
-            if "energy is low" not in observation_lower:
-                return Decision("move", {"target": "village_plaza", "thought": "A festival is on. The plaza is where everyone should be."}, "A festival is on. The plaza is where everyone should be.")
+        if "festival mood sweeps the village" in observation_lower and "energy is low" not in observation_lower:
+            # Only celebrate once the resolver-verified hint appears (near the
+            # plaza); otherwise travel there first. Celebrating repeatedly gets
+            # stale, so switch back to normal village life after a while.
+            if "- Festival special: once near the plaza, use celebrate to join in." in request.observation:
+                if agent_repeated_tool_count < 2:
+                    return Decision("celebrate", {"thought": "The village is celebrating; joining lifts everyone's spirits."}, "The village is celebrating; joining lifts everyone's spirits.")
+                return Decision(
+                    "submit_plan",
+                    {
+                        "goal": "Leave the festival and gather food",
+                        "steps": [
+                            {"tool": "move", "arguments": {"target": "communal_farm", "thought": "Walk away from the crowd to real work."}},
+                            {"tool": "wait", "arguments": {"thought": "Pause at the farm before deciding."}},
+                        ],
+                        "thought": "The festival has been enjoyed; now food needs gathering.",
+                    },
+                    "The festival has been enjoyed; now food needs gathering.",
+                )
+            return Decision("move", {"target": "village_plaza", "thought": "A festival is on. The plaza is where everyone should be."}, "A festival is on. The plaza is where everyone should be.")
         if "traveling trader" in observation_lower and "energy is low" not in observation_lower:
+            if "Trader special" in request.observation:
+                give_item, give_quantity = ("wheat", 1) if inventory.get("wheat", 0) >= 2 else (("wood", 2) if inventory.get("wood", 0) >= 3 else ("berries", 1))
+                get_item = "fish" if give_item != "fish" else "wheat"
+                get_quantity = give_quantity * 2
+                if inventory.get(give_item, 0) >= give_quantity and agent_repeated_tool_count < 3:
+                    return Decision(
+                        "trade_with_trader",
+                        {
+                            "give_item": give_item,
+                            "give_quantity": give_quantity,
+                            "get_item": get_item,
+                            "get_quantity": get_quantity,
+                            "thought": "The traveling trader pays double; this is worth it while they are here.",
+                        },
+                        "The traveling trader pays double; this is worth it while they are here.",
+                    )
             return Decision("move", {"target": "village_plaza", "thought": "A trader is at the plaza. I should not miss this."}, "A trader is at the plaza. I should not miss this.")
         if personal_needs.get("hunger", 0) >= 60:
             hungry_tile = self._find_adjacent_tile(position, berry_tiles) or self._find_adjacent_tile(position, pond_tiles)
@@ -819,8 +911,19 @@ class HeuristicDecisionPolicy:
                 return Decision("farm", {"action": "harvest", "tile_position": f"{ripe_food[0]},{ripe_food[1]}", "thought": "I am hungry and there is ripe food here."}, "I am hungry and there is ripe food here.")
             if inventory.get("meal", 0) > 0:
                 return Decision("rest", {"thought": "I am hungry and carrying a cooked meal, so a rest with food is the fastest fix."}, "I am hungry and carrying a cooked meal, so a rest with food is the fastest fix.")
-            if berry_tiles or pond_tiles:
-                return Decision("move", {"target": "berry_grove" if berry_tiles else "village_pond", "thought": "I am hungry and should reach the nearest food source."}, "I am hungry and should reach the nearest food source.")
+            if inventory.get("wheat", 0) + inventory.get("berries", 0) > 0:
+                return Decision(
+                    "submit_plan",
+                    {
+                        "goal": "Cook and eat from my own supplies",
+                        "steps": [
+                            {"tool": "move", "arguments": {"target": "community_hearth", "thought": "I carry food; cooking stretches it."}},
+                            {"tool": "cook_meal", "arguments": {"ingredient": "wheat", "quantity": 1, "thought": "Turn wheat into a proper meal."}},
+                        ],
+                        "thought": "Better to cook what I carry than wander while starving.",
+                    },
+                    "Better to cook what I carry than wander while starving.",
+                )
         if personal_needs.get("warmth", 100) <= 35:
             if position == self._extract_house(request.observation) and inventory.get("wood", 0) >= 1 and "house fire is lit" not in observation_lower:
                 return Decision("light_fire", {"thought": "I am cold and have wood, so a home fire is the obvious answer."}, "I am cold and have wood, so a home fire is the obvious answer.")
@@ -960,7 +1063,7 @@ class HeuristicDecisionPolicy:
                 {"message": "How is your day going?", "target": other, "thought": "I should stay social."},
                 "I should stay social.",
             )
-        if project_options:
+        if project_options and agent_repeated_tool_count < 3:
             project_name, contribution = project_options[0]
             return Decision(
                 "contribute_project",
@@ -970,6 +1073,39 @@ class HeuristicDecisionPolicy:
                     "thought": "A public project will help everyone and create better future options.",
                 },
                 "A public project will help everyone and create better future options.",
+            )
+        if agent_repeated_tool_count >= 3 or self.world_is_stable(village_stats, inventory) or position == self._extract_house(request.observation):
+            # Break out of any fixation (or stable-contentment stall) with a
+            # deliberate change of scene so the village keeps exploring. Rotate
+            # destinations so a failed or completed errand does not become a
+            # new loop.
+            if self.world_is_stable(village_stats, inventory) and not (agent_repeated_tool_count >= 3):
+                if inventory.get("fish", 0) == 0:
+                    target = "village_pond"
+                    why = "Nothing is urgent, so I will try my luck at the pond."
+                elif inventory.get("flowers", 0) == 0:
+                    target = "flower_garden"
+                    why = "A quiet walk through the flower garden would round out the day."
+                else:
+                    target = "village_plaza"
+                    why = "Nothing urgent needs me, so I will rejoin the village."
+                return Decision("move", {"target": target, "thought": why}, why)
+            if self._is_market_active_text(observation_lower) or village_stats.get("morale", 6.0) <= 5.5:
+                return Decision("move", {"target": "village_plaza", "thought": "I should break my routine and rejoin the village."}, "I should break my routine and rejoin the village.")
+            return Decision("move", {"target": "communal_farm", "thought": "Breaking my loop with a farm visit."}, "Breaking my loop with a farm visit.")
+        if "energy is low" in observation_lower and agent_repeated_tool_count >= 2 and position != self._extract_house(request.observation):
+            # Resting in place has stopped working; go home to sleep properly.
+            return Decision(
+                "submit_plan",
+                {
+                    "goal": "Go home and sleep properly",
+                    "steps": [
+                        {"tool": "move", "arguments": {"target": "my_house", "thought": "My energy needs real sleep, not another micro-rest."}},
+                        {"tool": "sleep", "arguments": {"thought": "Sleep until rested."}},
+                    ],
+                    "thought": "Resting on repeat is not helping; I will go home to sleep.",
+                },
+                "Resting on repeat is not helping; I will go home to sleep.",
             )
         if any(stage == "ripe" for _, stage in farm_tiles):
             tile = self._extract_tile_after("Farm at (", request.observation, only_stage="ripe")

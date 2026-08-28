@@ -55,6 +55,9 @@ PLAN_TOOL_NAMES = {
     "accept_help",
     "reject_help",
     "counter_offer",
+    "granary",
+    "celebrate",
+    "trade_with_trader",
     "wait",
 }
 
@@ -165,6 +168,8 @@ class SimulationEngine:
         self._expire_alliances()
         self._expire_conversations()
         self._expire_asks()
+        self._expire_promises()
+        self._update_granary()
         self._emit_shared_gathering_events()
         self._schedule_decisions()
 
@@ -286,6 +291,15 @@ class SimulationEngine:
     def _advance_season(self) -> None:
         index = self.SEASON_ORDER.index(self.world.season) if self.world.season in self.SEASON_ORDER else 0
         self.world.season = self.SEASON_ORDER[(index + 1) % len(self.SEASON_ORDER)]
+        for agent in self.world.agents.values():
+            if agent.plan is not None and agent.plan.horizon == "season":
+                agent.interrupt_flag = True
+                self.action_resolver._remember(
+                    agent.name,
+                    f"The season turned to {self.world.season}; my long plan needs rethinking.",
+                    3,
+                    ["plan", "season"],
+                )
         event = self.action_resolver._record_event(
             kind="season_change",
             actor="system",
@@ -530,6 +544,66 @@ class SimulationEngine:
             if ask.status == "pending" and ask.expires_tick <= self.world.tick_count:
                 ask.status = "expired"
 
+    def _expire_promises(self) -> None:
+        """Lapse day-old promises and cool trust for unkept commitments."""
+        for promise in self.world.promises:
+            if promise.status != "pending":
+                continue
+            if self.world.day < promise.expires_day:
+                continue
+            if self.world.day == promise.expires_day:
+                # Still today: a grace period, no penalty yet.
+                continue
+            promise.status = "expired"
+            self.relationships.record(
+                promise.from_agent,
+                promise.to_agent,
+                self.world.day,
+                -0.08,
+                f"Never followed through: {promise.description[:50]}",
+            )
+            self.action_resolver._remember(
+                promise.from_agent,
+                f"I never kept my promise to {promise.to_agent}: {promise.description[:60]}.",
+                4,
+                ["promise"],
+            )
+            self.action_resolver._remember(
+                promise.to_agent,
+                f"{promise.from_agent} never kept the promise: {promise.description[:60]}.",
+                5,
+                ["promise"],
+            )
+
+    def _update_granary(self) -> None:
+        """The completed granary slowly converts stored food into village food.
+
+        Shares stay intact; only the physical store drains as the village
+        draws rations from it during shortages and storms.
+        """
+        if not (self.world.public_projects.get("granary") is not None and self.world.public_projects["granary"].completed):
+            return
+        if self.world.village_food >= 11.0:
+            # The village larder is full; the granary keeps its stores.
+            return
+        store_total = sum(self.world.granary_store.values())
+        if store_total <= 0:
+            return
+        event_kind = self._event_kind()
+        ration_rate = 0.05
+        if event_kind in {"shortage", "storm"}:
+            ration_rate = 0.12
+        drawn = min(store_total, max(0.0, ration_rate))
+        items = sorted(self.world.granary_store.items(), key=lambda pair: pair[1], reverse=True)
+        remaining_to_draw = drawn
+        for item, amount in items:
+            if remaining_to_draw <= 0:
+                break
+            take = min(amount, remaining_to_draw)
+            self.world.granary_store[item] -= take
+            remaining_to_draw -= take
+        self.world.village_food = min(12.0, self.world.village_food + drawn * 0.8)
+
     def _emit_shared_gathering_events(self) -> None:
         market_tick = max(6, int(round(20 * self.config.ticks_per_second)))
         if self.world.tick_count % market_tick == 0:
@@ -598,9 +672,12 @@ class SimulationEngine:
 
     def _install_plan(self, agent: AgentState, decision: Decision) -> None:
         goal = str(decision.arguments.get("goal", "")).strip()[:120]
+        horizon_raw = str(decision.arguments.get("horizon", "short")).strip().lower()
+        horizon = horizon_raw if horizon_raw in {"short", "day", "season"} else "short"
+        max_steps = {"short": 5, "day": 8, "season": 10}[horizon]
         raw_steps = decision.arguments.get("steps") or []
         steps: list[dict] = []
-        for raw in raw_steps[:5]:
+        for raw in raw_steps[:max_steps]:
             if not isinstance(raw, dict):
                 continue
             tool_name = str(raw.get("tool", "")).strip()
@@ -617,6 +694,7 @@ class SimulationEngine:
             steps=steps,
             created_tick=self.world.tick_count,
             thought=str(decision.thought),
+            horizon=horizon,
         )
         agent.next_think_tick = self.world.tick_count + 1
         agent.pending_result = f"Plan accepted: {goal} ({len(steps)} steps)."

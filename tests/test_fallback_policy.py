@@ -32,15 +32,17 @@ def test_fallback_policy_runs_engine_without_waiting_forever(app_config) -> None
 def test_fallback_policy_moves_agents_off_home_tiles(app_config) -> None:
     engine = SimulationEngine(app_config)
     start_positions = {name: agent.position for name, agent in engine.world.agents.items()}
+    ever_moved: set[str] = set()
     try:
         for _ in range(100):
             engine.tick()
             engine.wait_for_idle()
-        moved = [
-            name
-            for name, agent in engine.world.agents.items()
-            if agent.position != start_positions[name]
-        ]
-        assert moved, "no agent ever moved under the fallback policy"
+            for name, agent in engine.world.agents.items():
+                if agent.position != start_positions[name]:
+                    ever_moved.add(name)
+        # The run may end while agents are legitimately asleep at home, so we
+        # require observed movement during the run rather than a final-position
+        # snapshot.
+        assert ever_moved, "no agent ever moved under the fallback policy"
     finally:
         engine.shutdown()

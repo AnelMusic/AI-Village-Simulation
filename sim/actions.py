@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import uuid
+import re
 
 from .memory import MemoryStore
 from .relationships import RelationshipGraph
-from .world import AgentState, AllianceOffer, Conversation, HelpAsk, ProjectState, TradeOffer, WorldEvent, WorldState
+from .world import AgentState, AllianceOffer, Conversation, HelpAsk, ProjectState, Promise, TradeOffer, WorldEvent, WorldState
+
+
+PROMISE_PATTERNS: list[str] = [
+    r"(?:i(?:'ll| will|'m going to)|let me|i can)\s+(?:bring|give|send|trade|share|help|meet|join)",
+    r"(?:i owe you|i promise|count on me|you have my word)",
+]
 
 
 @dataclass
@@ -133,6 +140,59 @@ class ActionResolver:
     def _boost_village_warmth(self, amount: float) -> None:
         self.world.village_warmth = min(12.0, self.world.village_warmth + amount)
 
+    def _granary_active(self) -> bool:
+        project = self.world.public_projects.get("granary")
+        return project is not None and project.completed
+
+    def _grant_granary_share(self, agent_name: str, item: str, quantity: int) -> None:
+        if quantity <= 0:
+            return
+        shares = self.world.granary_shares.setdefault(agent_name, {})
+        shares[item] = shares.get(item, 0) + quantity
+
+    def _spend_granary_share(self, agent_name: str, item: str, quantity: int) -> bool:
+        shares = self.world.granary_shares.get(agent_name)
+        if not shares or shares.get(item, 0) < quantity:
+            return False
+        store = self.world.granary_store.get(item, 0)
+        if store < quantity:
+            return False
+        shares[item] -= quantity
+        self.world.granary_store[item] = store - quantity
+        return True
+
+    def _add_promise(self, speaker: str, listener: str, description: str) -> Promise | None:
+        text = description.strip()
+        if len(text) < 3:
+            return None
+        promise = Promise(
+            promise_id=str(uuid.uuid4())[:8],
+            from_agent=speaker,
+            to_agent=listener,
+            description=text,
+            made_tick=self.world.tick_count,
+            made_day=self.world.day,
+            expires_day=self.world.day + 3,
+        )
+        self.world.promises.append(promise)
+        self.world.promises = self.world.promises[-60:]
+        return promise
+
+    def _fulfill_promise(self, agent_name: str, other_name: str) -> tuple[Promise | None, bool]:
+        pending = [
+            promise
+            for promise in self.world.promises
+            if promise.status == "pending"
+            and promise.from_agent == agent_name
+            and promise.to_agent == other_name
+        ]
+        if not pending:
+            return None, False
+        promise = pending[0]
+        promise.status = "fulfilled"
+        self.relationships.record(agent_name, other_name, self.world.day, 0.10, f"Kept a promise: {promise.description[:50]}")
+        return promise, True
+
     def _handle_wait(self, agent: AgentState, args: dict) -> ActionResult:
         agent.current_action = "waiting"
         event = self._record_event(
@@ -189,6 +249,15 @@ class ActionResolver:
             public=True,
         )
         self._remember(agent.name, f'I said "{message}" to {target}.', 2, ["speak"])
+        if target in self.world.agents and heard_by:
+            lowered = message.lower()
+            for pattern in PROMISE_PATTERNS:
+                if re.search(pattern, lowered):
+                    promise = self._add_promise(agent.name, target, message)
+                    if promise is not None:
+                        self._remember(agent.name, f'I promised {target}: "{message}".', 4, ["promise"])
+                        self._remember(target, f'{agent.name} promised me: "{message}".', 5, ["promise"])
+                    break
         for listener in heard_by:
             listener.last_social_tick = self.world.tick_count
             listener.social_need = max(0.0, listener.social_need - 0.5)
@@ -198,6 +267,162 @@ class ActionResolver:
         if target in self.world.agents and heard_by:
             self._open_or_continue_conversation(agent, self.world.agents[target], message)
         return ActionResult(True, f'You said "{message}".', event)
+
+    def _handle_granary(self, agent: AgentState, args: dict) -> ActionResult:
+        """Deposit food into the communal granary or withdraw your earned share.
+
+        Deposits earn a personal share credit; withdrawing spends only that
+        credit. Keeping food private is always possible, which makes the
+        choice a real hoarding dilemma rather than a forced donation.
+        """
+        if not self._granary_active():
+            return ActionResult(False, "The granary is not built yet.")
+        granary = self.world.public_projects["granary"]
+        if not self._at_or_adjacent(agent.position, granary.site):
+            return ActionResult(False, "You need to be at or adjacent to the granary.")
+        action = str(args.get("action", "deposit")).strip().lower()
+        item = str(args.get("item", "wheat")).strip().lower()
+        quantity = max(0, int(args.get("quantity", 1)))
+        if item not in {"wheat", "berries", "fish", "meal"}:
+            return ActionResult(False, f"The granary does not store {item}.")
+        if action == "deposit":
+            if quantity <= 0:
+                return ActionResult(False, "Choose at least one unit to deposit.")
+            if agent.inventory.get(item, 0) < quantity:
+                return ActionResult(False, f"You do not have {quantity} {item} to deposit.")
+            agent.inventory[item] -= quantity
+            self.world.granary_store[item] = self.world.granary_store.get(item, 0) + quantity
+            self._grant_granary_share(agent.name, item, quantity)
+            self.world.village_food = min(12.0, self.world.village_food + 0.25 * quantity)
+            agent.current_action = "storing"
+            event = self._record_event(
+                kind="granary_deposit",
+                actor=agent.name,
+                summary=f"{agent.name} stored {quantity} {item} in the granary.",
+                location=granary.site,
+                public=True,
+                metadata={"item": item, "quantity": quantity},
+            )
+            shares = self.world.granary_shares[agent.name]
+            self._remember(
+                agent.name,
+                f"I stored {quantity} {item} in the granary; my share credit there is now {shares[item]}.",
+                3,
+                ["granary"],
+            )
+            return ActionResult(True, f"You stored {quantity} {item}. Your share: {shares[item]} {item}.", event)
+        if action == "withdraw":
+            if quantity <= 0:
+                return ActionResult(False, "Choose at least one unit to withdraw.")
+            shares = self.world.granary_shares.get(agent.name, {})
+            if shares.get(item, 0) < quantity:
+                return ActionResult(False, f"Your granary share covers only {shares.get(item, 0)} {item}.")
+            store = self.world.granary_store.get(item, 0)
+            if store < quantity:
+                return ActionResult(False, f"The granary currently holds only {store} {item}.")
+            self._spend_granary_share(agent.name, item, quantity)
+            agent.inventory[item] = agent.inventory.get(item, 0) + quantity
+            agent.current_action = "storing"
+            event = self._record_event(
+                kind="granary_withdraw",
+                actor=agent.name,
+                summary=f"{agent.name} withdrew {quantity} {item} from the granary.",
+                location=granary.site,
+                public=False,
+                metadata={"item": item, "quantity": quantity},
+            )
+            self._remember(agent.name, f"I withdrew {quantity} {item} from my granary share.", 2, ["granary"])
+            return ActionResult(True, f"You withdrew {quantity} {item} from your share.", event)
+        return ActionResult(False, f"Unsupported granary action: {action}")
+
+    def _festival_bonus_active(self) -> bool:
+        return self.world.active_event is not None and self.world.active_event.get("kind") == "festival"
+
+    def _trader_bonus_active(self) -> bool:
+        return self.world.active_event is not None and self.world.active_event.get("kind") == "trader"
+
+    def _handle_celebrate(self, agent: AgentState, args: dict) -> ActionResult:
+        """Festival-only action: join the plaza celebration for shared recovery."""
+        if not self._festival_bonus_active():
+            return ActionResult(False, "There is no festival to celebrate right now.")
+        plaza = self.world.landmarks.get("village_plaza")
+        if plaza is None or abs(agent.position[0] - plaza[0]) + abs(agent.position[1] - plaza[1]) > 3:
+            return ActionResult(False, "Move closer to the plaza to join the festival.")
+        if agent.is_sleeping:
+            return ActionResult(False, "You are asleep.")
+        agent.current_action = "celebrating"
+        agent.last_social_tick = self.world.tick_count
+        agent.social_need = max(0.0, agent.social_need - 0.6)
+        agent.energy = min(1.0, agent.energy + 0.05)
+        agent.comfort_ticks = min(agent.comfort_ticks + 6, 16)
+        crowd = [
+            other
+            for other in self.world.agents.values()
+            if other.name != agent.name and abs(other.position[0] - plaza[0]) + abs(other.position[1] - plaza[1]) <= 3 and not other.is_sleeping
+        ]
+        self.world.village_morale = min(12.0, self.world.village_morale + 0.15 + 0.05 * min(len(crowd), 4))
+        for other in crowd[:4]:
+            other.comfort_ticks = min(other.comfort_ticks + 2, 16)
+            self.relationships.record(agent.name, other.name, self.world.day, 0.03, "Celebrated together at the festival")
+        event = self._record_event(
+            kind="celebrate",
+            actor=agent.name,
+            summary=f"{agent.name} joined the festival celebration at the plaza.",
+            location=plaza,
+            public=True,
+            metadata={"crowd": len(crowd)},
+        )
+        memory_names = ", ".join(other.name for other in crowd[:2]) or "the villagers"
+        self._remember(agent.name, f"I celebrated at the festival with {memory_names}.", 3, ["festival", "social"])
+        return ActionResult(True, "You celebrated with the village.", event)
+
+    def _handle_trade_with_trader(self, agent: AgentState, args: dict) -> ActionResult:
+        """Trader-event action: swap village goods for rare outside goods.
+
+        The traveling trader pays above market rate, but only while the
+        trader event is active, so trading during the visit matters.
+        """
+        if not self._trader_bonus_active():
+            return ActionResult(False, "The traveling trader is not here right now.")
+        plaza = self.world.landmarks.get("village_plaza")
+        if plaza is None or abs(agent.position[0] - plaza[0]) + abs(agent.position[1] - plaza[1]) > 2:
+            return ActionResult(False, "Find the trader's stalls at the plaza first.")
+        give_item = str(args.get("give_item", "")).strip().lower()
+        give_quantity = max(1, int(args.get("give_quantity", 1)))
+        get_item = str(args.get("get_item", "")).strip().lower()
+        get_quantity = max(1, int(args.get("get_quantity", 1)))
+        valid_items = {"wood", "wheat", "berries", "fish", "flowers", "meal"}
+        if give_item not in valid_items or get_item not in valid_items:
+            return ActionResult(False, "The trader only deals in village goods.")
+        if give_item == get_item:
+            return ActionResult(False, "The trader will not trade an item for itself.")
+        if agent.inventory.get(give_item, 0) < give_quantity:
+            return ActionResult(False, f"You do not have {give_quantity} {give_item} to trade.")
+        # The trader pays a premium: one given unit yields up to two units back.
+        received = min(get_quantity, give_quantity * 2)
+        agent.inventory[give_item] -= give_quantity
+        agent.inventory[get_item] = agent.inventory.get(get_item, 0) + received
+        agent.current_action = "trading"
+        agent.last_social_tick = self.world.tick_count
+        self.world.village_morale = min(12.0, self.world.village_morale + 0.08)
+        if give_item in {"wheat", "berries", "fish", "meal"}:
+            # Selling food to the outsider slightly tightens village supply.
+            self.world.village_food = max(0.0, self.world.village_food - 0.1 * give_quantity)
+        event = self._record_event(
+            kind="trade_trader",
+            actor=agent.name,
+            summary=f"{agent.name} traded {give_quantity} {give_item} to the traveling trader for {received} {get_item}.",
+            location=plaza,
+            public=True,
+            metadata={"gave": {give_item: give_quantity}, "got": {get_item: received}},
+        )
+        self._remember(
+            agent.name,
+            f"I traded {give_quantity} {give_item} to the traveling trader for {received} {get_item}.",
+            4,
+            ["trade", "trader"],
+        )
+        return ActionResult(True, f"The trader gave you {received} {get_item}.", event)
 
     def _open_or_continue_conversation(self, speaker: AgentState, listener: AgentState, message: str) -> Conversation:
         for conversation in self.world.conversations.values():
@@ -261,9 +486,40 @@ class ActionResolver:
             public=True,
             metadata={"conversation_id": conversation.conversation_id},
         )
-        self._remember(agent.name, f'I replied to {other.name}: "{message}"', 3, ["speak"])
-        self._remember(other.name, f'{agent.name} replied to me: "{message}"', 3, ["heard"])
-        return ActionResult(True, f'You replied to {other.name}.', event)
+        lowered = message.lower()
+        kept = False
+        broke = False
+        pending_promises: list[Promise] = []
+        for pattern in PROMISE_PATTERNS:
+            if re.search(pattern, lowered):
+                promise = self._add_promise(agent.name, other.name, message)
+                if promise is not None:
+                    self._remember(agent.name, f'I promised {other.name}: "{message}".', 4, ["promise"])
+                    self._remember(other.name, f'{agent.name} promised me: "{message}".', 5, ["promise"])
+                break
+        if any(phrase in lowered for phrase in ("here it is", "as promised", "kept my word", "i did it", "done as agreed")):
+            _, kept = self._fulfill_promise(agent.name, other.name)
+        elif any(phrase in lowered for phrase in ("not doing it", "changed my mind", "i refuse")):
+            pending_promises = [
+                p for p in self.world.promises
+                if p.status == "pending" and p.from_agent == agent.name and p.to_agent == other.name
+            ]
+            if pending_promises:
+                pending_promises[0].status = "broken"
+                broke = True
+        if kept:
+            self.relationships.record(agent.name, other.name, self.world.day, 0.05, "Confirmed a kept promise")
+            note = " They acknowledged that a promise was kept."
+        elif broke:
+            self.relationships.record(agent.name, other.name, self.world.day, -0.12, f"Broke a promise: {pending_promises[0].description[:50]}")
+            note = " The broken promise stings."
+        else:
+            note = ""
+        memory_tags = ["speak"] + (["promise"] if (kept or broke) else [])
+        salience = 3 + (4 if (kept or broke) else 0)
+        self._remember(agent.name, f'I replied to {other.name}: "{message}"{note}', salience, memory_tags)
+        self._remember(other.name, f'{agent.name} replied to me: "{message}"{note}', salience + 1, ["heard"] + (["promise"] if (kept or broke) else []))
+        return ActionResult(True, f"You replied to {other.name}.{note}", event)
 
     def _handle_ask_help(self, agent: AgentState, args: dict) -> ActionResult:
         target_name = args["target_agent"]
@@ -779,6 +1035,8 @@ class ActionResolver:
         self._boost_village_morale(0.12 * quantity)
         if self.world.public_projects.get("bathhouse") and self.world.public_projects["bathhouse"].completed:
             self._boost_village_morale(0.08)
+        if self._festival_bonus_active():
+            self._boost_village_morale(0.10)
         for helper in helpers[:2]:
             helper.energy = min(1.0, helper.energy + 0.04)
             helper.comfort_ticks = min(helper.comfort_ticks + 2, 16)
@@ -1115,6 +1373,9 @@ class ActionResolver:
                 )
             if project.name == "granary":
                 self._boost_village_food(2.0)
+                for villager_name in self.world.agents:
+                    for item, amount in project.progress.items():
+                        self._grant_granary_share(villager_name, item, 0)
             elif project.name == "wood_shed":
                 self._boost_village_warmth(2.0)
             elif project.name == "market_stalls":

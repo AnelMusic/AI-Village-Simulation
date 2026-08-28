@@ -438,6 +438,55 @@ TOOLS: list[dict] = [
     },
     {
         "type": "function",
+        "name": "granary",
+        "description": "Deposit food (wheat, berries, fish, or meals) into the communal granary to earn a personal share credit, or withdraw only what you have earned. Deposits feed the village; keeping food private is possible but weakens the commons.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["deposit", "withdraw"]},
+                "item": {"type": "string", "enum": ["wheat", "berries", "fish", "meal"]},
+                "quantity": {"type": "integer"},
+                "thought": {"type": "string"},
+            },
+            "required": ["action", "item", "quantity", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "celebrate",
+        "description": "During a festival, join the plaza celebration. Celebrating together lifts morale, restores a little energy, and warms nearby relationships.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "thought": {"type": "string"},
+            },
+            "required": ["thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "trade_with_trader",
+        "description": "While the traveling trader is at the plaza, swap one of your goods for outside goods at a premium rate (up to double). Selling food tightens village supply slightly.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "give_item": {"type": "string", "enum": ["wood", "wheat", "berries", "fish", "flowers", "meal"]},
+                "give_quantity": {"type": "integer"},
+                "get_item": {"type": "string", "enum": ["wood", "wheat", "berries", "fish", "flowers", "meal"]},
+                "get_quantity": {"type": "integer"},
+                "thought": {"type": "string"},
+            },
+            "required": ["give_item", "give_quantity", "get_item", "get_quantity", "thought"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "wait",
         "description": "Do nothing for this tick.",
         "parameters": {
@@ -471,7 +520,7 @@ TOOLS: list[dict] = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "tool": {"type": "string", "description": "One of: move, speak, give_gift, propose_alliance, farm, light_fire, chop_wood, forage, fish, gather_flowers, cook_meal, sleep, rest, offer_trade, contribute_project, reply, ask_help, accept_help, reject_help, counter_offer, wait"},
+                            "tool": {"type": "string", "description": "One of: move, speak, give_gift, propose_alliance, farm, light_fire, chop_wood, forage, fish, gather_flowers, cook_meal, sleep, rest, offer_trade, contribute_project, reply, ask_help, accept_help, reject_help, counter_offer, granary, celebrate, trade_with_trader, wait"},
                             "arguments": {"type": "object", "description": "The tool arguments, same shape as calling the tool directly."},
                         },
                         "required": ["tool", "arguments"],

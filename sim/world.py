@@ -138,6 +138,7 @@ class AgentPlan:
     current_step: int = 0
     created_tick: int = 0
     thought: str = ""
+    horizon: str = "short"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +147,7 @@ class AgentPlan:
             "current_step": self.current_step,
             "created_tick": self.created_tick,
             "thought": self.thought,
+            "horizon": self.horizon,
         }
 
     @classmethod
@@ -156,11 +158,43 @@ class AgentPlan:
             current_step=int(data.get("current_step", 0)),
             created_tick=int(data.get("created_tick", 0)),
             thought=str(data.get("thought", "")),
+            horizon=str(data.get("horizon", "short")),
         )
 
     def describe(self) -> str:
         total = len(self.steps)
-        return f"{self.goal} (step {min(self.current_step + 1, total)}/{total})"
+        suffix = {"day": ", day plan", "season": ", season plan"}.get(self.horizon, "")
+        return f"{self.goal} (step {min(self.current_step + 1, total)}/{total}{suffix})"
+
+
+@dataclass
+class Promise:
+    """A commitment made during dialogue that both villagers remember."""
+
+    promise_id: str
+    from_agent: str
+    to_agent: str
+    description: str
+    made_tick: int
+    made_day: int
+    expires_day: int
+    status: str = "pending"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Promise":
+        return cls(
+            promise_id=data["promise_id"],
+            from_agent=data["from_agent"],
+            to_agent=data["to_agent"],
+            description=str(data.get("description", "")),
+            made_tick=int(data["made_tick"]),
+            made_day=int(data["made_day"]),
+            expires_day=int(data["expires_day"]),
+            status=str(data.get("status", "pending")),
+        )
 
 
 @dataclass
@@ -387,6 +421,9 @@ class WorldState:
     active_event: dict[str, Any] | None = None
     season: str = "spring"
     activity_heatmap: list[list[int]] = field(default_factory=list)
+    granary_store: dict[str, int] = field(default_factory=dict)
+    granary_shares: dict[str, dict[str, int]] = field(default_factory=dict)
+    promises: list[Promise] = field(default_factory=list)
 
     def tile_at(self, position: tuple[int, int]) -> Tile:
         x, y = position
@@ -436,6 +473,9 @@ class WorldState:
             "active_event": dict(self.active_event) if self.active_event else None,
             "season": self.season,
             "activity_heatmap": [list(row) for row in self.activity_heatmap] if self.activity_heatmap else [],
+            "granary_store": dict(self.granary_store),
+            "granary_shares": {name: dict(items) for name, items in self.granary_shares.items()},
+            "promises": [promise.to_dict() for promise in self.promises[-100:]],
         }
 
     @classmethod
@@ -481,6 +521,11 @@ class WorldState:
             active_event=dict(data["active_event"]) if data.get("active_event") else None,
             season=str(data.get("season", "spring")),
             activity_heatmap=[list(row) for row in data.get("activity_heatmap", [])],
+            granary_store=dict(data.get("granary_store", {})),
+            granary_shares={
+                name: dict(items) for name, items in data.get("granary_shares", {}).items()
+            },
+            promises=[Promise.from_dict(item) for item in data.get("promises", [])],
         )
 
     def save(self, path: str | Path) -> None:
@@ -695,7 +740,7 @@ def generate_world(config: AppConfig) -> WorldState:
         agents=agents,
         landmarks=landmarks,
         public_projects=public_projects,
-        schema_version=7,
+        schema_version=8,
         village_food=5.8,
         village_warmth=5.4,
         village_morale=6.4,
