@@ -4,7 +4,7 @@ A 2D tile-based social sandbox where a handful of AI villagers share one world, 
 
 Each villager is an autonomous agent that perceives the world through text, decides through structured tool calls, and lives with the consequences: hunger, cold, exhaustion, social debt, trust, and the lasting effects of what they build or fail to build. The goal is not a scripted story — it is emergent village behavior you can watch, tune, and study.
 
-<img width="1176" height="754" alt="Village Sim running in the Pygame viewer" src="https://github.com/user-attachments/assets/44560c65-ac6b-4ebf-8004-3aa6c571765b" />
+<img width="1180" height="760" alt="Village Sim running in the Pygame viewer" src="docs/screenshot.png" />
 
 ## Why this exists
 
@@ -129,6 +129,7 @@ On exit, the console prints total token usage and estimated cost for the run.
 | `python main.py --headless` | Run without the renderer |
 | `python main.py --headless --duration-seconds 30` | Headless for a fixed wall-clock duration |
 | `python main.py --config my_config.yaml` | Use a custom config file |
+| `python scripts/screenshot.py` | Run briefly and save a viewer screenshot to `docs/screenshot.png` |
 | `pytest` | Run the test suite |
 
 ## The Pygame viewer
