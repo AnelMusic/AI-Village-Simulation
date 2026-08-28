@@ -2,7 +2,7 @@
 
 Village Sim is a 2D tile-based social sandbox where a small group of AI villagers share one world, one set of resources, and a growing web of memories, favors, routines, and infrastructure.
 
-Each villager acts independently through structured tool calls. They can move, rest, sleep, cook, fish, forage, gather flowers, trade, give gifts, contribute to public projects, propose alliances, and broadcast to nearby groups. The goal is not a scripted story, but emergent village behavior you can watch, tune, and study.
+Each villager acts independently through structured tool calls. They can move, rest, sleep, cook, fish, forage, gather flowers, trade, give gifts, contribute to public projects, propose alliances, broadcast to nearby groups, deposit food in a shared granary, celebrate at festivals, trade with visiting merchants, and keep — or quietly break — spoken promises. The goal is not a scripted story, but emergent village behavior you can watch, tune, and study.
 
 <img width="1176" height="754" alt="image" src="https://github.com/user-attachments/assets/44560c65-ac6b-4ebf-8004-3aa6c571765b" />
 
@@ -69,17 +69,19 @@ This is meant to be part simulation, part sandbox, and part experiment.
   - fish
   - flowers
   - meals
+  - shared granary store with per-villager share credits (a hoarding-vs-contributing dilemma)
   - seasons (spring / summer / autumn / winter)
   - scarcity-based trade price hints
 - World events:
   - storms that chill and drain the village
-  - festivals that pull everyone to the plaza
-  - shortages that pause regrowth
-  - traveling traders that reward trade
+  - festivals that pull everyone to the plaza, with a `celebrate` action that lifts morale and bonds neighbors
+  - shortages that pause regrowth and draw extra granary rations
+  - traveling traders with a `trade_with_trader` action for premium swaps at the plaza
 - Social actions:
   - direct speech
   - local group announcements
   - conversations with expected replies
+  - spoken promises ("I'll bring you wood") that both sides remember and that settle as kept, broken, or lapsed
   - trade offers, responses, and counter-offers
   - help requests that call in favors
   - gifting
@@ -88,9 +90,9 @@ This is meant to be part simulation, part sandbox, and part experiment.
 - Agent internals:
   - per-villager hunger, warmth, and loneliness
   - personality traits that mechanically scale needs
-  - multi-step plans the engine executes across ticks
+  - multi-step plans the engine executes across ticks, with short, full-day, or season-length horizons (season plans pause at each season change for rethinking)
 - Village progression:
-  - granary
+  - granary (building it unlocks the shared store and share credits)
   - wood shed
   - market stalls
   - bathhouse
@@ -280,6 +282,8 @@ The project is split into a simulation core and a renderer.
   - trades
   - gifts
   - alliances
+  - granary deposits and share withdrawals
+  - promises, festival, and trader actions
   - cooking, gathering, resting, sleeping
 - `sim/agent.py`
   - observation builder
@@ -389,17 +393,18 @@ The project works, but it is still rough in important ways.
 
 - The plan stack reduces loops, but agents can still over-commit to one project when it looks like the best payoff.
 - Engine reroutes still exist as guardrails; they are logged as `engine_override` events, but a deeper fix is better model grounding.
-- Trade frequency is better with price hints and counter-offers, but a true negotiated economy (granary shares, storage ownership) is still open.
+- Trade has price hints and counter-offers, and the granary adds share credits, but a truly negotiated economy (prices, ownership beyond share credits) is still open.
+- Promise settlement is phrase-based: saying "as promised" or "here it is" settles a promise even if the promised item never actually changed hands.
 - Live API runs can still hit rate limits at high tick rates; the circuit breaker degrades gracefully to heuristic behavior during outages.
 
 ## What Needs Improvement Next
 
 The best next steps would be:
 
-- granary storage with communal shares and the hoarding dilemma
-- deeper dialogue memory so conversations reference earlier promises
-- richer festival/trader event interactions (event-specific actions)
-- longer-horizon planning (plans that span a full day or season)
+- action-grounded promises: fulfilling "I'll bring you wood" by actually giving the wood, not just by claiming it happened
+- viewer visibility for granary contents, share credits, and open promises
+- deeper dialogue memory so conversations reference more than promises
+- tuning the hoarding dilemma and trader premium rates from real long runs
 
 ## Why The Logs Matter
 
